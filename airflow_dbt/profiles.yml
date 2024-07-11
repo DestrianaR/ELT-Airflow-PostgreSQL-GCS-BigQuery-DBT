@@ -1,0 +1,14 @@
+dbt_bigquery:
+  outputs:
+    dev:
+      dataset: sales_db
+      job_execution_timeout_seconds: 300
+      job_retries: 1
+      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS') }}"
+      location: US
+      method: service-account
+      priority: interactive
+      project: elt-project-427017
+      threads: 4
+      type: bigquery
+  target: dev

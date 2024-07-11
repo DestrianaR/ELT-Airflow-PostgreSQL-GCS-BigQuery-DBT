@@ -1,0 +1,3370 @@
+[0m00:35:49.944816 [debug] [ThreadPool]: On elt-project-427017.information_schema: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "connection_name": "elt-project-427017.information_schema"} */
+
+    with
+                table_shards_stage as (
+    select
+        tables.project_id as table_catalog,
+        tables.dataset_id as table_schema,
+        coalesce(REGEXP_EXTRACT(tables.table_id, '^(.+)[0-9]{8}$'), tables.table_id) as table_name,
+        tables.table_id as shard_name,
+        REGEXP_EXTRACT(tables.table_id, '^.+([0-9]{8})$') as shard_index,
+        REGEXP_CONTAINS(tables.table_id, '^.+[0-9]{8}$') and tables.type = 1 as is_date_shard,
+        case
+            when materialized_views.table_name is not null then 'materialized view'
+            when tables.type = 1 then 'table'
+            when tables.type = 2 then 'view'
+            else 'external'
+        end as table_type,
+        tables.type = 1 as is_table,
+        JSON_VALUE(table_description.option_value) as table_comment,
+        tables.size_bytes,
+        tables.row_count
+    from `elt-project-427017`.`sales_db`.__TABLES__ tables
+    left join `elt-project-427017`.`sales_db`.INFORMATION_SCHEMA.MATERIALIZED_VIEWS materialized_views
+        on materialized_views.table_catalog = tables.project_id
+        and materialized_views.table_schema = tables.dataset_id
+        and materialized_views.table_name = tables.table_id
+    left join `elt-project-427017`.`sales_db`.INFORMATION_SCHEMA.TABLE_OPTIONS table_description
+        on table_description.table_catalog = tables.project_id
+        and table_description.table_schema = tables.dataset_id
+        and table_description.table_name = tables.table_id
+        and table_description.option_name = 'description'
+),
+                table_shards as (
+                    select * from table_shards_stage
+                    where ((
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('product')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('store')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('businessentityaddress')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('address')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('salesreason')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('specialoffer')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('salesorderheadersalesreason')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('countryregion')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('salesorderdetail')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('salesterritory')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('productsubcategory')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('person')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('productcategory')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('customer')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('stateprovince')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('salesorderheader')
+                            ))
+                ),
+                tables as (
+    select distinct
+        table_catalog,
+        table_schema,
+        table_name,
+        is_date_shard,
+        table_type,
+        is_table,
+        table_comment
+    from table_shards
+),
+                table_stats as (
+    select
+        table_catalog,
+        table_schema,
+        table_name,
+        max(shard_name) as latest_shard_name,
+        min(shard_index) as shard_min,
+        max(shard_index) as shard_max,
+        count(shard_index) as shard_count,
+        sum(size_bytes) as size_bytes,
+        sum(row_count) as row_count
+    from table_shards
+    group by 1, 2, 3
+),
+
+                columns as (
+    select
+        columns.table_catalog,
+        columns.table_schema,
+        columns.table_name as shard_name,
+        coalesce(paths.field_path, '<unknown>') as column_name,
+        -- invent a row number to account for nested fields
+        -- BQ does not treat these nested properties as independent fields
+        row_number() over (
+            partition by
+                columns.table_catalog,
+                columns.table_schema,
+                columns.table_name
+            order by
+                columns.ordinal_position,
+                paths.field_path
+        ) as column_index,
+        coalesce(paths.data_type, '<unknown>') as column_type,
+        paths.description as column_comment,
+        case when columns.is_partitioning_column = 'YES' then 1 else 0 end as is_partitioning_column,
+        case when columns.is_partitioning_column = 'YES' then paths.field_path end as partition_column,
+        case when columns.clustering_ordinal_position is not null then 1 else 0 end as is_clustering_column,
+        case when columns.clustering_ordinal_position is not null then paths.field_path end as cluster_column,
+        columns.clustering_ordinal_position
+    from `elt-project-427017`.`sales_db`.INFORMATION_SCHEMA.COLUMNS columns
+    join `elt-project-427017`.`sales_db`.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS paths
+        on paths.table_catalog = columns.table_catalog
+        and paths.table_schema = columns.table_schema
+        and paths.table_name = columns.table_name
+        and paths.column_name = columns.column_name
+    where columns.ordinal_position is not null
+),
+                column_stats as (
+    select
+        table_catalog,
+        table_schema,
+        shard_name,
+        max(is_partitioning_column) = 1 as is_partitioned,
+        max(partition_column) as partition_column,
+        max(is_clustering_column) = 1 as is_clustered,
+        array_to_string(
+            array_agg(
+                cluster_column ignore nulls
+                order by clustering_ordinal_position
+            ), ', '
+        ) as clustering_columns
+    from columns
+    group by 1, 2, 3
+)
+
+            
+    select
+        tables.table_catalog as table_database,
+        tables.table_schema,
+        case
+            when tables.is_date_shard then concat(tables.table_name, '*')
+            else tables.table_name
+        end as table_name,
+        tables.table_type,
+        tables.table_comment,
+        -- coalesce column metadata fields to ensure they are non-null for catalog generation
+        -- external table columns are not present in COLUMN_FIELD_PATHS
+        coalesce(columns.column_name, '<unknown>') as column_name,
+        coalesce(columns.column_index, 1) as column_index,
+        coalesce(columns.column_type, '<unknown>') as column_type,
+        coalesce(columns.column_comment, '') as column_comment,
+
+        'Shard count' as `stats__date_shards__label`,
+        table_stats.shard_count as `stats__date_shards__value`,
+        'The number of date shards in this table' as `stats__date_shards__description`,
+        tables.is_date_shard as `stats__date_shards__include`,
+
+        'Shard (min)' as `stats__date_shard_min__label`,
+        table_stats.shard_min as `stats__date_shard_min__value`,
+        'The first date shard in this table' as `stats__date_shard_min__description`,
+        tables.is_date_shard as `stats__date_shard_min__include`,
+
+        'Shard (max)' as `stats__date_shard_max__label`,
+        table_stats.shard_max as `stats__date_shard_max__value`,
+        'The last date shard in this table' as `stats__date_shard_max__description`,
+        tables.is_date_shard as `stats__date_shard_max__include`,
+
+        '# Rows' as `stats__num_rows__label`,
+        table_stats.row_count as `stats__num_rows__value`,
+        'Approximate count of rows in this table' as `stats__num_rows__description`,
+        tables.is_table as `stats__num_rows__include`,
+
+        'Approximate Size' as `stats__num_bytes__label`,
+        table_stats.size_bytes as `stats__num_bytes__value`,
+        'Approximate size of table as reported by BigQuery' as `stats__num_bytes__description`,
+        tables.is_table as `stats__num_bytes__include`,
+
+        'Partitioned By' as `stats__partitioning_type__label`,
+        column_stats.partition_column as `stats__partitioning_type__value`,
+        'The partitioning column for this table' as `stats__partitioning_type__description`,
+        column_stats.is_partitioned as `stats__partitioning_type__include`,
+
+        'Clustered By' as `stats__clustering_fields__label`,
+        column_stats.clustering_columns as `stats__clustering_fields__value`,
+        'The clustering columns for this table' as `stats__clustering_fields__description`,
+        column_stats.is_clustered as `stats__clustering_fields__include`
+
+    from tables
+    join table_stats
+        on table_stats.table_catalog = tables.table_catalog
+        and table_stats.table_schema = tables.table_schema
+        and table_stats.table_name = tables.table_name
+    left join column_stats
+        on column_stats.table_catalog = tables.table_catalog
+        and column_stats.table_schema = tables.table_schema
+        and column_stats.shard_name = table_stats.latest_shard_name
+    left join columns
+        on columns.table_catalog = tables.table_catalog
+        and columns.table_schema = tables.table_schema
+        and columns.shard_name = table_stats.latest_shard_name
+
+  
+[0m00:35:49.947815 [debug] [ThreadPool]: Opening a new connection, currently in state init
+[0m00:35:49.950000 [debug] [ThreadPool]: Opening a new connection, currently in state init
+[0m00:35:49.979007 [debug] [ThreadPool]: On elt-project-427017.information_schema: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "connection_name": "elt-project-427017.information_schema"} */
+
+    with
+                table_shards_stage as (
+    select
+        tables.project_id as table_catalog,
+        tables.dataset_id as table_schema,
+        coalesce(REGEXP_EXTRACT(tables.table_id, '^(.+)[0-9]{8}$'), tables.table_id) as table_name,
+        tables.table_id as shard_name,
+        REGEXP_EXTRACT(tables.table_id, '^.+([0-9]{8})$') as shard_index,
+        REGEXP_CONTAINS(tables.table_id, '^.+[0-9]{8}$') and tables.type = 1 as is_date_shard,
+        case
+            when materialized_views.table_name is not null then 'materialized view'
+            when tables.type = 1 then 'table'
+            when tables.type = 2 then 'view'
+            else 'external'
+        end as table_type,
+        tables.type = 1 as is_table,
+        JSON_VALUE(table_description.option_value) as table_comment,
+        tables.size_bytes,
+        tables.row_count
+    from `elt-project-427017`.`sales_db_staging`.__TABLES__ tables
+    left join `elt-project-427017`.`sales_db_staging`.INFORMATION_SCHEMA.MATERIALIZED_VIEWS materialized_views
+        on materialized_views.table_catalog = tables.project_id
+        and materialized_views.table_schema = tables.dataset_id
+        and materialized_views.table_name = tables.table_id
+    left join `elt-project-427017`.`sales_db_staging`.INFORMATION_SCHEMA.TABLE_OPTIONS table_description
+        on table_description.table_catalog = tables.project_id
+        and table_description.table_schema = tables.dataset_id
+        and table_description.table_name = tables.table_id
+        and table_description.option_name = 'description'
+),
+                table_shards as (
+                    select * from table_shards_stage
+                    where ((
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_salesorderheadersalesreason')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_specialoffer')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_salesreason')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_person')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_salesterritory')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_salesorderheader')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_businessentityaddress')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_product')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_productcategory')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_productsubcategory')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_countryregion')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_salesorderdetail')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_customer')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_address')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_store')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_stateprovince')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_date')
+                            ))
+                ),
+                tables as (
+    select distinct
+        table_catalog,
+        table_schema,
+        table_name,
+        is_date_shard,
+        table_type,
+        is_table,
+        table_comment
+    from table_shards
+),
+                table_stats as (
+    select
+        table_catalog,
+        table_schema,
+        table_name,
+        max(shard_name) as latest_shard_name,
+        min(shard_index) as shard_min,
+        max(shard_index) as shard_max,
+        count(shard_index) as shard_count,
+        sum(size_bytes) as size_bytes,
+        sum(row_count) as row_count
+    from table_shards
+    group by 1, 2, 3
+),
+
+                columns as (
+    select
+        columns.table_catalog,
+        columns.table_schema,
+        columns.table_name as shard_name,
+        coalesce(paths.field_path, '<unknown>') as column_name,
+        -- invent a row number to account for nested fields
+        -- BQ does not treat these nested properties as independent fields
+        row_number() over (
+            partition by
+                columns.table_catalog,
+                columns.table_schema,
+                columns.table_name
+            order by
+                columns.ordinal_position,
+                paths.field_path
+        ) as column_index,
+        coalesce(paths.data_type, '<unknown>') as column_type,
+        paths.description as column_comment,
+        case when columns.is_partitioning_column = 'YES' then 1 else 0 end as is_partitioning_column,
+        case when columns.is_partitioning_column = 'YES' then paths.field_path end as partition_column,
+        case when columns.clustering_ordinal_position is not null then 1 else 0 end as is_clustering_column,
+        case when columns.clustering_ordinal_position is not null then paths.field_path end as cluster_column,
+        columns.clustering_ordinal_position
+    from `elt-project-427017`.`sales_db_staging`.INFORMATION_SCHEMA.COLUMNS columns
+    join `elt-project-427017`.`sales_db_staging`.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS paths
+        on paths.table_catalog = columns.table_catalog
+        and paths.table_schema = columns.table_schema
+        and paths.table_name = columns.table_name
+        and paths.column_name = columns.column_name
+    where columns.ordinal_position is not null
+),
+                column_stats as (
+    select
+        table_catalog,
+        table_schema,
+        shard_name,
+        max(is_partitioning_column) = 1 as is_partitioned,
+        max(partition_column) as partition_column,
+        max(is_clustering_column) = 1 as is_clustered,
+        array_to_string(
+            array_agg(
+                cluster_column ignore nulls
+                order by clustering_ordinal_position
+            ), ', '
+        ) as clustering_columns
+    from columns
+    group by 1, 2, 3
+)
+
+            
+    select
+        tables.table_catalog as table_database,
+        tables.table_schema,
+        case
+            when tables.is_date_shard then concat(tables.table_name, '*')
+            else tables.table_name
+        end as table_name,
+        tables.table_type,
+        tables.table_comment,
+        -- coalesce column metadata fields to ensure they are non-null for catalog generation
+        -- external table columns are not present in COLUMN_FIELD_PATHS
+        coalesce(columns.column_name, '<unknown>') as column_name,
+        coalesce(columns.column_index, 1) as column_index,
+        coalesce(columns.column_type, '<unknown>') as column_type,
+        coalesce(columns.column_comment, '') as column_comment,
+
+        'Shard count' as `stats__date_shards__label`,
+        table_stats.shard_count as `stats__date_shards__value`,
+        'The number of date shards in this table' as `stats__date_shards__description`,
+        tables.is_date_shard as `stats__date_shards__include`,
+
+        'Shard (min)' as `stats__date_shard_min__label`,
+        table_stats.shard_min as `stats__date_shard_min__value`,
+        'The first date shard in this table' as `stats__date_shard_min__description`,
+        tables.is_date_shard as `stats__date_shard_min__include`,
+
+        'Shard (max)' as `stats__date_shard_max__label`,
+        table_stats.shard_max as `stats__date_shard_max__value`,
+        'The last date shard in this table' as `stats__date_shard_max__description`,
+        tables.is_date_shard as `stats__date_shard_max__include`,
+
+        '# Rows' as `stats__num_rows__label`,
+        table_stats.row_count as `stats__num_rows__value`,
+        'Approximate count of rows in this table' as `stats__num_rows__description`,
+        tables.is_table as `stats__num_rows__include`,
+
+        'Approximate Size' as `stats__num_bytes__label`,
+        table_stats.size_bytes as `stats__num_bytes__value`,
+        'Approximate size of table as reported by BigQuery' as `stats__num_bytes__description`,
+        tables.is_table as `stats__num_bytes__include`,
+
+        'Partitioned By' as `stats__partitioning_type__label`,
+        column_stats.partition_column as `stats__partitioning_type__value`,
+        'The partitioning column for this table' as `stats__partitioning_type__description`,
+        column_stats.is_partitioned as `stats__partitioning_type__include`,
+
+        'Clustered By' as `stats__clustering_fields__label`,
+        column_stats.clustering_columns as `stats__clustering_fields__value`,
+        'The clustering columns for this table' as `stats__clustering_fields__description`,
+        column_stats.is_clustered as `stats__clustering_fields__include`
+
+    from tables
+    join table_stats
+        on table_stats.table_catalog = tables.table_catalog
+        and table_stats.table_schema = tables.table_schema
+        and table_stats.table_name = tables.table_name
+    left join column_stats
+        on column_stats.table_catalog = tables.table_catalog
+        and column_stats.table_schema = tables.table_schema
+        and column_stats.shard_name = table_stats.latest_shard_name
+    left join columns
+        on columns.table_catalog = tables.table_catalog
+        and columns.table_schema = tables.table_schema
+        and columns.shard_name = table_stats.latest_shard_name
+
+  
+[0m00:35:49.980007 [debug] [ThreadPool]: On elt-project-427017.information_schema: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "connection_name": "elt-project-427017.information_schema"} */
+
+    with
+                table_shards_stage as (
+    select
+        tables.project_id as table_catalog,
+        tables.dataset_id as table_schema,
+        coalesce(REGEXP_EXTRACT(tables.table_id, '^(.+)[0-9]{8}$'), tables.table_id) as table_name,
+        tables.table_id as shard_name,
+        REGEXP_EXTRACT(tables.table_id, '^.+([0-9]{8})$') as shard_index,
+        REGEXP_CONTAINS(tables.table_id, '^.+[0-9]{8}$') and tables.type = 1 as is_date_shard,
+        case
+            when materialized_views.table_name is not null then 'materialized view'
+            when tables.type = 1 then 'table'
+            when tables.type = 2 then 'view'
+            else 'external'
+        end as table_type,
+        tables.type = 1 as is_table,
+        JSON_VALUE(table_description.option_value) as table_comment,
+        tables.size_bytes,
+        tables.row_count
+    from `elt-project-427017`.`sales_db_mart`.__TABLES__ tables
+    left join `elt-project-427017`.`sales_db_mart`.INFORMATION_SCHEMA.MATERIALIZED_VIEWS materialized_views
+        on materialized_views.table_catalog = tables.project_id
+        and materialized_views.table_schema = tables.dataset_id
+        and materialized_views.table_name = tables.table_id
+    left join `elt-project-427017`.`sales_db_mart`.INFORMATION_SCHEMA.TABLE_OPTIONS table_description
+        on table_description.table_catalog = tables.project_id
+        and table_description.table_schema = tables.dataset_id
+        and table_description.table_name = tables.table_id
+        and table_description.option_name = 'description'
+),
+                table_shards as (
+                    select * from table_shards_stage
+                    where ((
+                                upper(table_schema) = upper('sales_db_mart')
+                            and upper(table_name) = upper('dimCustomer')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_mart')
+                            and upper(table_name) = upper('dimOrderSpecialOffer')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_mart')
+                            and upper(table_name) = upper('dimProduct')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_mart')
+                            and upper(table_name) = upper('dimTerritory')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_mart')
+                            and upper(table_name) = upper('fctSales')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_mart')
+                            and upper(table_name) = upper('dimDate')
+                            ))
+                ),
+                tables as (
+    select distinct
+        table_catalog,
+        table_schema,
+        table_name,
+        is_date_shard,
+        table_type,
+        is_table,
+        table_comment
+    from table_shards
+),
+                table_stats as (
+    select
+        table_catalog,
+        table_schema,
+        table_name,
+        max(shard_name) as latest_shard_name,
+        min(shard_index) as shard_min,
+        max(shard_index) as shard_max,
+        count(shard_index) as shard_count,
+        sum(size_bytes) as size_bytes,
+        sum(row_count) as row_count
+    from table_shards
+    group by 1, 2, 3
+),
+
+                columns as (
+    select
+        columns.table_catalog,
+        columns.table_schema,
+        columns.table_name as shard_name,
+        coalesce(paths.field_path, '<unknown>') as column_name,
+        -- invent a row number to account for nested fields
+        -- BQ does not treat these nested properties as independent fields
+        row_number() over (
+            partition by
+                columns.table_catalog,
+                columns.table_schema,
+                columns.table_name
+            order by
+                columns.ordinal_position,
+                paths.field_path
+        ) as column_index,
+        coalesce(paths.data_type, '<unknown>') as column_type,
+        paths.description as column_comment,
+        case when columns.is_partitioning_column = 'YES' then 1 else 0 end as is_partitioning_column,
+        case when columns.is_partitioning_column = 'YES' then paths.field_path end as partition_column,
+        case when columns.clustering_ordinal_position is not null then 1 else 0 end as is_clustering_column,
+        case when columns.clustering_ordinal_position is not null then paths.field_path end as cluster_column,
+        columns.clustering_ordinal_position
+    from `elt-project-427017`.`sales_db_mart`.INFORMATION_SCHEMA.COLUMNS columns
+    join `elt-project-427017`.`sales_db_mart`.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS paths
+        on paths.table_catalog = columns.table_catalog
+        and paths.table_schema = columns.table_schema
+        and paths.table_name = columns.table_name
+        and paths.column_name = columns.column_name
+    where columns.ordinal_position is not null
+),
+                column_stats as (
+    select
+        table_catalog,
+        table_schema,
+        shard_name,
+        max(is_partitioning_column) = 1 as is_partitioned,
+        max(partition_column) as partition_column,
+        max(is_clustering_column) = 1 as is_clustered,
+        array_to_string(
+            array_agg(
+                cluster_column ignore nulls
+                order by clustering_ordinal_position
+            ), ', '
+        ) as clustering_columns
+    from columns
+    group by 1, 2, 3
+)
+
+            
+    select
+        tables.table_catalog as table_database,
+        tables.table_schema,
+        case
+            when tables.is_date_shard then concat(tables.table_name, '*')
+            else tables.table_name
+        end as table_name,
+        tables.table_type,
+        tables.table_comment,
+        -- coalesce column metadata fields to ensure they are non-null for catalog generation
+        -- external table columns are not present in COLUMN_FIELD_PATHS
+        coalesce(columns.column_name, '<unknown>') as column_name,
+        coalesce(columns.column_index, 1) as column_index,
+        coalesce(columns.column_type, '<unknown>') as column_type,
+        coalesce(columns.column_comment, '') as column_comment,
+
+        'Shard count' as `stats__date_shards__label`,
+        table_stats.shard_count as `stats__date_shards__value`,
+        'The number of date shards in this table' as `stats__date_shards__description`,
+        tables.is_date_shard as `stats__date_shards__include`,
+
+        'Shard (min)' as `stats__date_shard_min__label`,
+        table_stats.shard_min as `stats__date_shard_min__value`,
+        'The first date shard in this table' as `stats__date_shard_min__description`,
+        tables.is_date_shard as `stats__date_shard_min__include`,
+
+        'Shard (max)' as `stats__date_shard_max__label`,
+        table_stats.shard_max as `stats__date_shard_max__value`,
+        'The last date shard in this table' as `stats__date_shard_max__description`,
+        tables.is_date_shard as `stats__date_shard_max__include`,
+
+        '# Rows' as `stats__num_rows__label`,
+        table_stats.row_count as `stats__num_rows__value`,
+        'Approximate count of rows in this table' as `stats__num_rows__description`,
+        tables.is_table as `stats__num_rows__include`,
+
+        'Approximate Size' as `stats__num_bytes__label`,
+        table_stats.size_bytes as `stats__num_bytes__value`,
+        'Approximate size of table as reported by BigQuery' as `stats__num_bytes__description`,
+        tables.is_table as `stats__num_bytes__include`,
+
+        'Partitioned By' as `stats__partitioning_type__label`,
+        column_stats.partition_column as `stats__partitioning_type__value`,
+        'The partitioning column for this table' as `stats__partitioning_type__description`,
+        column_stats.is_partitioned as `stats__partitioning_type__include`,
+
+        'Clustered By' as `stats__clustering_fields__label`,
+        column_stats.clustering_columns as `stats__clustering_fields__value`,
+        'The clustering columns for this table' as `stats__clustering_fields__description`,
+        column_stats.is_clustered as `stats__clustering_fields__include`
+
+    from tables
+    join table_stats
+        on table_stats.table_catalog = tables.table_catalog
+        and table_stats.table_schema = tables.table_schema
+        and table_stats.table_name = tables.table_name
+    left join column_stats
+        on column_stats.table_catalog = tables.table_catalog
+        and column_stats.table_schema = tables.table_schema
+        and column_stats.shard_name = table_stats.latest_shard_name
+    left join columns
+        on columns.table_catalog = tables.table_catalog
+        and columns.table_schema = tables.table_schema
+        and columns.shard_name = table_stats.latest_shard_name
+
+  
+[0m00:35:51.094793 [debug] [ThreadPool]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:a683b529-db21-453e-bc1a-dcb23f172cdc&page=queryresults
+[0m00:35:51.097793 [debug] [ThreadPool]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:aec76b06-2684-4509-98d0-5e68c966fc97&page=queryresults
+[0m00:35:51.098793 [debug] [ThreadPool]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:973bcdad-8eaa-4f07-bf2c-6347cc2a4898&page=queryresults
+[0m00:35:55.227525 [info ] [MainThread]: Catalog written to C:\Users\destr\dbt_learn\airflow_dbt\target\catalog.json
+[0m00:35:55.229480 [debug] [MainThread]: Command `dbt docs generate` succeeded at 00:35:55.228481 after 12.28 seconds
+[0m00:35:55.229480 [debug] [MainThread]: Connection 'generate_catalog' was properly closed.
+[0m00:35:55.229480 [debug] [MainThread]: Connection 'elt-project-427017.information_schema' was properly closed.
+[0m00:35:55.230481 [debug] [MainThread]: Connection 'elt-project-427017.information_schema' was properly closed.
+[0m00:35:55.230481 [debug] [MainThread]: Connection 'elt-project-427017.information_schema' was properly closed.
+[0m00:35:55.231480 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'end', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000001AA0D0EFD00>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000001AA0FA74AF0>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000001AA0D4B2130>]}
+[0m00:35:55.231480 [debug] [MainThread]: Flushing usage events
+[0m00:36:05.658740 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'start', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000224048BFD00>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x0000022407594670>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x0000022407594880>]}
+
+
+============================== 00:36:05.661759 | 43e3f374-1c25-4269-b14a-6299d42b5533 ==============================
+[0m00:36:05.661759 [info ] [MainThread]: Running with dbt=1.8.3
+[0m00:36:05.662771 [debug] [MainThread]: running dbt with arguments {'printer_width': '80', 'indirect_selection': 'eager', 'log_cache_events': 'False', 'write_json': 'True', 'partial_parse': 'True', 'cache_selected_only': 'False', 'warn_error': 'None', 'debug': 'False', 'version_check': 'True', 'log_path': 'C:\\Users\\destr\\dbt_learn\\airflow_dbt\\logs', 'fail_fast': 'False', 'profiles_dir': 'C:\\Users\\destr\\dbt_learn\\airflow_dbt', 'use_colors': 'True', 'use_experimental_parser': 'False', 'no_print': 'None', 'quiet': 'False', 'empty': 'None', 'warn_error_options': 'WarnErrorOptions(include=[], exclude=[])', 'invocation_command': 'dbt docs serve', 'static_parser': 'True', 'log_format': 'default', 'target_path': 'None', 'introspect': 'True', 'send_anonymous_usage_stats': 'True'}
+[0m00:36:06.457784 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'project_id', 'label': '43e3f374-1c25-4269-b14a-6299d42b5533', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x0000022409FCE610>]}
+[0m00:36:06.496691 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'adapter_info', 'label': '43e3f374-1c25-4269-b14a-6299d42b5533', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x0000022406835040>]}
+[0m02:15:55.835428 [error] [MainThread]: Encountered an error:
+
+[0m02:15:55.898832 [error] [MainThread]: Traceback (most recent call last):
+  File "C:\Users\destr\dbt_learn\env\lib\site-packages\dbt\cli\requires.py", line 138, in wrapper
+    result, success = func(*args, **kwargs)
+  File "C:\Users\destr\dbt_learn\env\lib\site-packages\dbt\cli\requires.py", line 101, in wrapper
+    return func(*args, **kwargs)
+  File "C:\Users\destr\dbt_learn\env\lib\site-packages\dbt\cli\requires.py", line 218, in wrapper
+    return func(*args, **kwargs)
+  File "C:\Users\destr\dbt_learn\env\lib\site-packages\dbt\cli\requires.py", line 247, in wrapper
+    return func(*args, **kwargs)
+  File "C:\Users\destr\dbt_learn\env\lib\site-packages\dbt\cli\requires.py", line 294, in wrapper
+    return func(*args, **kwargs)
+  File "C:\Users\destr\dbt_learn\env\lib\site-packages\dbt\cli\main.py", line 303, in docs_serve
+    results = task.run()
+  File "C:\Users\destr\dbt_learn\env\lib\site-packages\dbt\task\docs\serve.py", line 29, in run
+    httpd.serve_forever()
+  File "C:\Users\destr\AppData\Local\Programs\Python\Python39\lib\socketserver.py", line 232, in serve_forever
+    ready = selector.select(poll_interval)
+  File "C:\Users\destr\AppData\Local\Programs\Python\Python39\lib\selectors.py", line 324, in select
+    r, w, _ = self._select(self._readers, self._writers, [], timeout)
+  File "C:\Users\destr\AppData\Local\Programs\Python\Python39\lib\selectors.py", line 315, in _select
+    r, w, x = select.select(r, w, w, timeout)
+KeyboardInterrupt
+
+[0m02:15:55.908030 [debug] [MainThread]: Command `dbt docs serve` failed at 02:15:55.906854 after 5990.30 seconds
+[0m02:15:55.910054 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'end', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000224048BFD00>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000002240ABDCF10>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000002240ABDCD00>]}
+[0m02:15:55.912074 [debug] [MainThread]: Flushing usage events
+[0m02:16:25.019735 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'start', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C2C0FD00>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C57A5910>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C57A5700>]}
+
+
+============================== 02:16:25.023735 | f85040fd-f8c3-4edc-9c59-8e8a8c6062d2 ==============================
+[0m02:16:25.023735 [info ] [MainThread]: Running with dbt=1.8.3
+[0m02:16:25.025242 [debug] [MainThread]: running dbt with arguments {'printer_width': '80', 'indirect_selection': 'eager', 'log_cache_events': 'False', 'write_json': 'True', 'partial_parse': 'True', 'cache_selected_only': 'False', 'profiles_dir': 'C:\\Users\\destr\\dbt_learn\\airflow_dbt', 'fail_fast': 'False', 'warn_error': 'None', 'log_path': 'C:\\Users\\destr\\dbt_learn\\airflow_dbt\\logs', 'debug': 'False', 'version_check': 'True', 'use_colors': 'True', 'use_experimental_parser': 'False', 'no_print': 'None', 'quiet': 'False', 'empty': 'False', 'log_format': 'default', 'invocation_command': 'dbt run', 'static_parser': 'True', 'introspect': 'True', 'target_path': 'None', 'warn_error_options': 'WarnErrorOptions(include=[], exclude=[])', 'send_anonymous_usage_stats': 'True'}
+[0m02:16:28.797681 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'project_id', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C81A41C0>]}
+[0m02:16:28.838614 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'adapter_info', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C8C35DC0>]}
+[0m02:16:28.839615 [info ] [MainThread]: Registered adapter: bigquery=1.8.2
+[0m02:16:28.893913 [debug] [MainThread]: checksum: 30bd4080c2bc8dee5936f8f60083ffbe1c906859d0fd965607c2144031479456, vars: {}, profile: , target: , version: 1.8.3
+[0m02:16:30.914163 [debug] [MainThread]: Partial parsing enabled: 1 files deleted, 1 files added, 1 files changed.
+[0m02:16:30.915182 [debug] [MainThread]: Partial parsing: added file: airflow_dbt://models\mart\dimSalesReason.sql
+[0m02:16:30.915726 [debug] [MainThread]: Partial parsing: deleted file: airflow_dbt://models\staging\stg_store.sql
+[0m02:16:30.915726 [debug] [MainThread]: Partial parsing: updated file: airflow_dbt://models\mart\fctSales.sql
+[0m02:16:31.122113 [warn ] [MainThread]: [[33mWARNING[0m]: Did not find matching node for patch with name 'stg_store' in the 'models' section of file 'models\staging\schema.yml'
+[0m02:16:31.126815 [warn ] [MainThread]: [[33mWARNING[0m]: Deprecated functionality
+The `tests` config has been renamed to `data_tests`. Please see
+https://docs.getdbt.com/docs/build/data-tests#new-data_tests-syntax for more
+information.
+[0m02:16:31.128085 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'deprecation', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'property_': 'warn', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C9151C10>]}
+[0m02:16:31.264357 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'load_project', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA41A130>]}
+[0m02:16:31.443715 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'resource_counts', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA371190>]}
+[0m02:16:31.444221 [info ] [MainThread]: Found 23 models, 19 data tests, 16 sources, 727 macros
+[0m02:16:31.444772 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'runnable_timing', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C9232220>]}
+[0m02:16:31.446917 [info ] [MainThread]: 
+[0m02:16:31.448074 [debug] [MainThread]: Acquiring new bigquery connection 'master'
+[0m02:16:31.453295 [debug] [ThreadPool]: Acquiring new bigquery connection 'list_elt-project-427017'
+[0m02:16:31.453924 [debug] [ThreadPool]: Acquiring new bigquery connection 'list_elt-project-427017'
+[0m02:16:31.453924 [debug] [ThreadPool]: Opening a new connection, currently in state init
+[0m02:16:31.454673 [debug] [ThreadPool]: Opening a new connection, currently in state init
+[0m02:16:32.794890 [debug] [ThreadPool]: Acquiring new bigquery connection 'list_elt-project-427017_sales_db_staging'
+[0m02:16:32.795990 [debug] [ThreadPool]: Acquiring new bigquery connection 'list_elt-project-427017_sales_db_mart'
+[0m02:16:32.797003 [debug] [ThreadPool]: Opening a new connection, currently in state init
+[0m02:16:32.797003 [debug] [ThreadPool]: Opening a new connection, currently in state init
+[0m02:16:34.165821 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'runnable_timing', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C2BFFDC0>]}
+[0m02:16:34.166827 [info ] [MainThread]: Concurrency: 4 threads (target='dev')
+[0m02:16:34.167394 [info ] [MainThread]: 
+[0m02:16:34.171869 [debug] [Thread-1  ]: Began running node model.airflow_dbt.stg_address
+[0m02:16:34.171869 [debug] [Thread-2  ]: Began running node model.airflow_dbt.stg_businessentityaddress
+[0m02:16:34.171869 [debug] [Thread-3  ]: Began running node model.airflow_dbt.stg_countryregion
+[0m02:16:34.173869 [debug] [Thread-4  ]: Began running node model.airflow_dbt.stg_customer
+[0m02:16:34.173869 [info ] [Thread-1  ]: 1 of 23 START sql view model sales_db_staging.stg_address ...................... [RUN]
+[0m02:16:34.173869 [info ] [Thread-2  ]: 2 of 23 START sql view model sales_db_staging.stg_businessentityaddress ........ [RUN]
+[0m02:16:34.175897 [info ] [Thread-3  ]: 3 of 23 START sql view model sales_db_staging.stg_countryregion ................ [RUN]
+[0m02:16:34.176903 [debug] [Thread-1  ]: Acquiring new bigquery connection 'model.airflow_dbt.stg_address'
+[0m02:16:34.176802 [info ] [Thread-4  ]: 4 of 23 START sql view model sales_db_staging.stg_customer ..................... [RUN]
+[0m02:16:34.178904 [debug] [Thread-2  ]: Acquiring new bigquery connection 'model.airflow_dbt.stg_businessentityaddress'
+[0m02:16:34.178904 [debug] [Thread-3  ]: Acquiring new bigquery connection 'model.airflow_dbt.stg_countryregion'
+[0m02:16:34.180452 [debug] [Thread-1  ]: Began compiling node model.airflow_dbt.stg_address
+[0m02:16:34.181458 [debug] [Thread-4  ]: Acquiring new bigquery connection 'model.airflow_dbt.stg_customer'
+[0m02:16:34.181458 [debug] [Thread-2  ]: Began compiling node model.airflow_dbt.stg_businessentityaddress
+[0m02:16:34.182459 [debug] [Thread-3  ]: Began compiling node model.airflow_dbt.stg_countryregion
+[0m02:16:34.190990 [debug] [Thread-1  ]: Writing injected SQL for node "model.airflow_dbt.stg_address"
+[0m02:16:34.191989 [debug] [Thread-4  ]: Began compiling node model.airflow_dbt.stg_customer
+[0m02:16:34.194989 [debug] [Thread-2  ]: Writing injected SQL for node "model.airflow_dbt.stg_businessentityaddress"
+[0m02:16:34.197690 [debug] [Thread-3  ]: Writing injected SQL for node "model.airflow_dbt.stg_countryregion"
+[0m02:16:34.201466 [debug] [Thread-4  ]: Writing injected SQL for node "model.airflow_dbt.stg_customer"
+[0m02:16:34.202449 [debug] [Thread-1  ]: Began executing node model.airflow_dbt.stg_address
+[0m02:16:34.202449 [debug] [Thread-2  ]: Began executing node model.airflow_dbt.stg_businessentityaddress
+[0m02:16:34.227905 [debug] [Thread-1  ]: Writing runtime sql for node "model.airflow_dbt.stg_address"
+[0m02:16:34.229917 [debug] [Thread-2  ]: Writing runtime sql for node "model.airflow_dbt.stg_businessentityaddress"
+[0m02:16:34.231095 [debug] [Thread-4  ]: Began executing node model.airflow_dbt.stg_customer
+[0m02:16:34.231095 [debug] [Thread-3  ]: Began executing node model.airflow_dbt.stg_countryregion
+[0m02:16:34.232121 [debug] [Thread-1  ]: Opening a new connection, currently in state init
+[0m02:16:34.235140 [debug] [Thread-4  ]: Writing runtime sql for node "model.airflow_dbt.stg_customer"
+[0m02:16:34.235692 [debug] [Thread-2  ]: Opening a new connection, currently in state init
+[0m02:16:34.239200 [debug] [Thread-3  ]: Writing runtime sql for node "model.airflow_dbt.stg_countryregion"
+[0m02:16:34.240665 [debug] [Thread-1  ]: On model.airflow_dbt.stg_address: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_address"} */
+
+
+  create or replace view `elt-project-427017`.`sales_db_staging`.`stg_address`
+  OPTIONS()
+  as with source as (
+
+    select * from `elt-project-427017`.`sales_db`.`address`
+
+),
+
+renamed as (
+
+    select
+        addressid,
+        addressline1,
+        addressline2,
+        city,
+        stateprovinceid,
+        postalcode,
+        spatiallocation
+
+    from source
+
+)
+
+select * from renamed;
+
+
+[0m02:16:34.242217 [debug] [Thread-2  ]: On model.airflow_dbt.stg_businessentityaddress: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_businessentityaddress"} */
+
+
+  create or replace view `elt-project-427017`.`sales_db_staging`.`stg_businessentityaddress`
+  OPTIONS()
+  as with source as (
+
+    select * from `elt-project-427017`.`sales_db`.`businessentityaddress`
+
+),
+renamed as (
+
+    select
+        addresstypeid,
+        businessentityid,
+        addressid
+    from source
+)
+    
+select * from renamed;
+
+
+[0m02:16:34.242217 [debug] [Thread-4  ]: Opening a new connection, currently in state init
+[0m02:16:34.288569 [debug] [Thread-3  ]: Opening a new connection, currently in state init
+[0m02:16:34.289569 [debug] [Thread-4  ]: On model.airflow_dbt.stg_customer: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_customer"} */
+
+
+  create or replace view `elt-project-427017`.`sales_db_staging`.`stg_customer`
+  OPTIONS()
+  as with source as (
+
+    select * from `elt-project-427017`.`sales_db`.`customer`
+
+),
+
+renamed as (
+
+    select
+        customerid,
+        personid,
+        storeid,
+        territoryid,
+        accountnumber,
+    from source
+
+)
+
+select * from renamed;
+
+
+[0m02:16:34.291568 [debug] [Thread-3  ]: On model.airflow_dbt.stg_countryregion: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_countryregion"} */
+
+
+  create or replace view `elt-project-427017`.`sales_db_staging`.`stg_countryregion`
+  OPTIONS()
+  as with source as (
+
+    select * from `elt-project-427017`.`sales_db`.`countryregion`
+
+),
+
+renamed as (
+
+    select
+        countryregioncode,
+        countryregionname
+
+    from source
+
+)
+
+select * from renamed;
+
+
+[0m02:16:35.372512 [debug] [Thread-1  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:d6fdf545-7d2d-4273-a293-21bbb3745326&page=queryresults
+[0m02:16:35.385895 [debug] [Thread-3  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:551f68da-d15b-4db4-ad91-eec5a293401e&page=queryresults
+[0m02:16:35.402492 [debug] [Thread-4  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:cf3a0af2-731e-4bec-91b6-205f98da401c&page=queryresults
+[0m02:16:35.456169 [debug] [Thread-2  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:7f1da946-c17f-4c5e-baf4-7e67f5a03935&page=queryresults
+[0m02:16:36.270197 [debug] [Thread-1  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA41A5B0>]}
+[0m02:16:36.274198 [debug] [Thread-2  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA41A310>]}
+[0m02:16:36.275701 [debug] [Thread-4  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA41AE20>]}
+[0m02:16:36.272198 [info ] [Thread-1  ]: 1 of 23 OK created sql view model sales_db_staging.stg_address ................. [[32mCREATE VIEW (0 processed)[0m in 2.09s]
+[0m02:16:36.277722 [debug] [Thread-3  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA41A4C0>]}
+[0m02:16:36.277722 [info ] [Thread-2  ]: 2 of 23 OK created sql view model sales_db_staging.stg_businessentityaddress ... [[32mCREATE VIEW (0 processed)[0m in 2.10s]
+[0m02:16:36.278706 [info ] [Thread-4  ]: 4 of 23 OK created sql view model sales_db_staging.stg_customer ................ [[32mCREATE VIEW (0 processed)[0m in 2.10s]
+[0m02:16:36.279708 [debug] [Thread-1  ]: Finished running node model.airflow_dbt.stg_address
+[0m02:16:36.281708 [debug] [Thread-2  ]: Finished running node model.airflow_dbt.stg_businessentityaddress
+[0m02:16:36.280707 [info ] [Thread-3  ]: 3 of 23 OK created sql view model sales_db_staging.stg_countryregion ........... [[32mCREATE VIEW (0 processed)[0m in 2.10s]
+[0m02:16:36.281708 [debug] [Thread-4  ]: Finished running node model.airflow_dbt.stg_customer
+[0m02:16:36.282738 [debug] [Thread-1  ]: Began running node model.airflow_dbt.stg_date
+[0m02:16:36.283738 [debug] [Thread-2  ]: Began running node model.airflow_dbt.stg_person
+[0m02:16:36.283738 [debug] [Thread-3  ]: Finished running node model.airflow_dbt.stg_countryregion
+[0m02:16:36.285243 [debug] [Thread-4  ]: Began running node model.airflow_dbt.stg_product
+[0m02:16:36.285757 [info ] [Thread-1  ]: 5 of 23 START sql view model sales_db_staging.stg_date ......................... [RUN]
+[0m02:16:36.286762 [info ] [Thread-2  ]: 6 of 23 START sql view model sales_db_staging.stg_person ....................... [RUN]
+[0m02:16:36.287307 [debug] [Thread-3  ]: Began running node model.airflow_dbt.stg_productcategory
+[0m02:16:36.288313 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_address, now model.airflow_dbt.stg_date)
+[0m02:16:36.288313 [info ] [Thread-4  ]: 7 of 23 START sql view model sales_db_staging.stg_product ...................... [RUN]
+[0m02:16:36.290312 [debug] [Thread-2  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_businessentityaddress, now model.airflow_dbt.stg_person)
+[0m02:16:36.290312 [info ] [Thread-3  ]: 8 of 23 START sql view model sales_db_staging.stg_productcategory .............. [RUN]
+[0m02:16:36.291313 [debug] [Thread-1  ]: Began compiling node model.airflow_dbt.stg_date
+[0m02:16:36.291313 [debug] [Thread-4  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_customer, now model.airflow_dbt.stg_product)
+[0m02:16:36.292311 [debug] [Thread-2  ]: Began compiling node model.airflow_dbt.stg_person
+[0m02:16:36.292311 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_countryregion, now model.airflow_dbt.stg_productcategory)
+[0m02:16:36.319785 [debug] [Thread-1  ]: Opening a new connection, currently in state closed
+[0m02:16:36.320784 [debug] [Thread-4  ]: Began compiling node model.airflow_dbt.stg_product
+[0m02:16:36.323784 [debug] [Thread-3  ]: Began compiling node model.airflow_dbt.stg_productcategory
+[0m02:16:36.326858 [debug] [Thread-2  ]: Writing injected SQL for node "model.airflow_dbt.stg_person"
+[0m02:16:36.331859 [debug] [Thread-4  ]: Writing injected SQL for node "model.airflow_dbt.stg_product"
+[0m02:16:36.332858 [debug] [Thread-1  ]: On model.airflow_dbt.stg_date: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_date"} */
+
+
+        select 
+
+    datetime_diff(
+        cast(cast('2014-12-31' as datetime ) as datetime),
+        cast(cast('2011-01-01' as datetime ) as datetime),
+        day
+    )
+
+  
+[0m02:16:36.336246 [debug] [Thread-3  ]: Writing injected SQL for node "model.airflow_dbt.stg_productcategory"
+[0m02:16:36.360780 [debug] [Thread-2  ]: Began executing node model.airflow_dbt.stg_person
+[0m02:16:36.361782 [debug] [Thread-4  ]: Began executing node model.airflow_dbt.stg_product
+[0m02:16:36.364782 [debug] [Thread-2  ]: Writing runtime sql for node "model.airflow_dbt.stg_person"
+[0m02:16:36.366128 [debug] [Thread-3  ]: Began executing node model.airflow_dbt.stg_productcategory
+[0m02:16:36.369137 [debug] [Thread-4  ]: Writing runtime sql for node "model.airflow_dbt.stg_product"
+[0m02:16:36.373135 [debug] [Thread-3  ]: Writing runtime sql for node "model.airflow_dbt.stg_productcategory"
+[0m02:16:36.374133 [debug] [Thread-2  ]: Opening a new connection, currently in state closed
+[0m02:16:36.375133 [debug] [Thread-4  ]: Opening a new connection, currently in state closed
+[0m02:16:36.375744 [debug] [Thread-3  ]: Opening a new connection, currently in state closed
+[0m02:16:36.377751 [debug] [Thread-2  ]: On model.airflow_dbt.stg_person: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_person"} */
+
+
+  create or replace view `elt-project-427017`.`sales_db_staging`.`stg_person`
+  OPTIONS()
+  as with source as (
+
+    select * from `elt-project-427017`.`sales_db`.`person`
+
+),
+
+renamed as (
+
+    select
+        businessentityid,
+        persontype,
+        namestyle,
+        title,
+        firstname,
+        middlename,
+        lastname,
+        suffix,
+        emailpromotion,
+        rowguid,
+        birthdate,
+        maritalstatus,
+        gender,
+        totalchildren,
+        numberchildrenathome,
+        houseownerflag,
+        numbercarsowned,
+        datefirstpurchase,
+        commutedistance,
+        education,
+        occupation
+
+    from source
+
+)
+
+select * from renamed;
+
+
+[0m02:16:36.379751 [debug] [Thread-4  ]: On model.airflow_dbt.stg_product: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_product"} */
+
+
+  create or replace view `elt-project-427017`.`sales_db_staging`.`stg_product`
+  OPTIONS()
+  as with source as (
+
+    select * from `elt-project-427017`.`sales_db`.`product`
+
+),
+
+renamed as (
+
+    select
+        productid,
+        productname,
+        productnumber,
+        makeflag,
+        finishedgoodsflag,
+        color,
+        safetystocklevel,
+        reorderpoint,
+        
+
+  CAST(REPLACE(standardcost, ',', '.') AS FLOAT64)
+
+ AS standardcost,
+        
+
+  CAST(REPLACE(listprice, ',', '.') AS FLOAT64)
+
+ AS listprice,
+        size,
+        sizeunitmeasurecode,
+        weightunitmeasurecode,
+        weight,
+        daystomanufacture,
+        productline,
+        class,
+        style,
+        productsubcategoryid,
+        productmodelid,
+        sellstartdate,
+        sellenddate,
+        discontinueddate
+        
+    from source
+
+)
+
+select * from renamed;
+
+
+[0m02:16:36.403346 [debug] [Thread-3  ]: On model.airflow_dbt.stg_productcategory: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_productcategory"} */
+
+
+  create or replace view `elt-project-427017`.`sales_db_staging`.`stg_productcategory`
+  OPTIONS()
+  as with source as (
+
+    select * from `elt-project-427017`.`sales_db`.`productcategory`
+
+),
+
+renamed as (
+
+    select
+        productcategoryid,
+        productcategory
+
+    from source
+
+)
+
+select * from renamed;
+
+
+[0m02:16:37.780447 [debug] [Thread-1  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:231b63ba-cc44-437c-8d4b-d5a08d4640e4&page=queryresults
+[0m02:16:37.823402 [debug] [Thread-2  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:9c6722e8-130e-4a64-a85d-5ce4267b3025&page=queryresults
+[0m02:16:37.921912 [debug] [Thread-4  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:3d18f085-20f8-499c-9981-ef4a1ff3a4dc&page=queryresults
+[0m02:16:37.960133 [debug] [Thread-3  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:1555d5a5-852f-4ebb-9d82-710c20a7a08c&page=queryresults
+[0m02:16:38.774497 [debug] [Thread-4  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C92C1280>]}
+[0m02:16:38.775001 [info ] [Thread-4  ]: 7 of 23 OK created sql view model sales_db_staging.stg_product ................. [[32mCREATE VIEW (0 processed)[0m in 2.48s]
+[0m02:16:38.776005 [debug] [Thread-4  ]: Finished running node model.airflow_dbt.stg_product
+[0m02:16:38.777018 [debug] [Thread-4  ]: Began running node model.airflow_dbt.stg_productsubcategory
+[0m02:16:38.777482 [info ] [Thread-4  ]: 9 of 23 START sql view model sales_db_staging.stg_productsubcategory ........... [RUN]
+[0m02:16:38.778482 [debug] [Thread-4  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_product, now model.airflow_dbt.stg_productsubcategory)
+[0m02:16:38.778482 [debug] [Thread-4  ]: Began compiling node model.airflow_dbt.stg_productsubcategory
+[0m02:16:38.781581 [debug] [Thread-4  ]: Writing injected SQL for node "model.airflow_dbt.stg_productsubcategory"
+[0m02:16:38.782516 [debug] [Thread-4  ]: Began executing node model.airflow_dbt.stg_productsubcategory
+[0m02:16:38.785198 [debug] [Thread-4  ]: Writing runtime sql for node "model.airflow_dbt.stg_productsubcategory"
+[0m02:16:38.785750 [debug] [Thread-4  ]: Opening a new connection, currently in state closed
+[0m02:16:38.786757 [debug] [Thread-4  ]: On model.airflow_dbt.stg_productsubcategory: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_productsubcategory"} */
+
+
+  create or replace view `elt-project-427017`.`sales_db_staging`.`stg_productsubcategory`
+  OPTIONS()
+  as with source as (
+
+    select * from `elt-project-427017`.`sales_db`.`productsubcategory`
+
+),
+
+renamed as (
+
+    select
+        productsubcategoryid,
+        productcategoryid,
+        productsubcategory
+
+    from source
+
+)
+
+select * from renamed;
+
+
+[0m02:16:39.111722 [debug] [Thread-3  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C91220A0>]}
+[0m02:16:39.111722 [info ] [Thread-3  ]: 8 of 23 OK created sql view model sales_db_staging.stg_productcategory ......... [[32mCREATE VIEW (0 processed)[0m in 2.82s]
+[0m02:16:39.113720 [debug] [Thread-3  ]: Finished running node model.airflow_dbt.stg_productcategory
+[0m02:16:39.113720 [debug] [Thread-3  ]: Began running node model.airflow_dbt.stg_salesorderdetail
+[0m02:16:39.113720 [info ] [Thread-3  ]: 10 of 23 START sql view model sales_db_staging.stg_salesorderdetail ............ [RUN]
+[0m02:16:39.115250 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_productcategory, now model.airflow_dbt.stg_salesorderdetail)
+[0m02:16:39.115773 [debug] [Thread-3  ]: Began compiling node model.airflow_dbt.stg_salesorderdetail
+[0m02:16:39.120292 [debug] [Thread-3  ]: Writing injected SQL for node "model.airflow_dbt.stg_salesorderdetail"
+[0m02:16:39.121324 [debug] [Thread-3  ]: Began executing node model.airflow_dbt.stg_salesorderdetail
+[0m02:16:39.124290 [debug] [Thread-3  ]: Writing runtime sql for node "model.airflow_dbt.stg_salesorderdetail"
+[0m02:16:39.126792 [debug] [Thread-2  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA4AAFD0>]}
+[0m02:16:39.127841 [info ] [Thread-2  ]: 6 of 23 OK created sql view model sales_db_staging.stg_person .................. [[32mCREATE VIEW (0 processed)[0m in 2.84s]
+[0m02:16:39.128840 [debug] [Thread-3  ]: Opening a new connection, currently in state closed
+[0m02:16:39.129840 [debug] [Thread-2  ]: Finished running node model.airflow_dbt.stg_person
+[0m02:16:39.130838 [debug] [Thread-3  ]: On model.airflow_dbt.stg_salesorderdetail: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_salesorderdetail"} */
+
+
+  create or replace view `elt-project-427017`.`sales_db_staging`.`stg_salesorderdetail`
+  OPTIONS()
+  as with source as (
+
+    select * from `elt-project-427017`.`sales_db`.`salesorderdetail`
+
+),
+
+renamed as (
+
+    select
+        salesorderid,
+        salesorderdetailid,
+        carriertrackingnumber,
+        orderqty,
+        productid,
+        specialofferid,
+        
+
+  CAST(REPLACE(unitprice, ',', '.') AS FLOAT64)
+
+ AS unitprice,
+        
+
+  CAST(REPLACE(unitpricediscount, ',', '.') AS FLOAT64)
+
+ AS unitpricediscount,
+        linetotal
+
+    from source
+
+)
+
+select * from renamed;
+
+
+[0m02:16:39.131871 [debug] [Thread-2  ]: Began running node model.airflow_dbt.stg_salesorderheader
+[0m02:16:39.155815 [info ] [Thread-2  ]: 11 of 23 START sql view model sales_db_staging.stg_salesorderheader ............ [RUN]
+[0m02:16:39.157877 [debug] [Thread-2  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_person, now model.airflow_dbt.stg_salesorderheader)
+[0m02:16:39.157877 [debug] [Thread-2  ]: Began compiling node model.airflow_dbt.stg_salesorderheader
+[0m02:16:39.161878 [debug] [Thread-2  ]: Writing injected SQL for node "model.airflow_dbt.stg_salesorderheader"
+[0m02:16:39.162877 [debug] [Thread-2  ]: Began executing node model.airflow_dbt.stg_salesorderheader
+[0m02:16:39.164892 [debug] [Thread-2  ]: Writing runtime sql for node "model.airflow_dbt.stg_salesorderheader"
+[0m02:16:39.166120 [debug] [Thread-2  ]: Opening a new connection, currently in state closed
+[0m02:16:39.168261 [debug] [Thread-2  ]: On model.airflow_dbt.stg_salesorderheader: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_salesorderheader"} */
+
+
+  create or replace view `elt-project-427017`.`sales_db_staging`.`stg_salesorderheader`
+  OPTIONS()
+  as with source as (
+
+    select * from `elt-project-427017`.`sales_db`.`salesorderheader`
+
+),
+
+renamed as (
+
+    select
+        salesorderid,
+        revisionnumber,
+        TIMESTAMP(orderdate) AS orderdate,
+        TIMESTAMP(duedate) AS duedate,
+        TIMESTAMP(shipdate) AS shipdate,
+        status,
+        onlineorderflag,
+        salesordernumber,
+        purchaseordernumber,
+        accountnumber,
+        customerid,
+        salespersonid,
+        territoryid,
+        billtoaddressid,
+        shiptoaddressid,
+        shipmethodid,
+        creditcardid,
+        creditcardapprovalcode,
+        currencyrateid,
+        
+
+  CAST(REPLACE(subtotal, ',', '.') AS FLOAT64)
+
+ AS subtotal,
+        
+
+  CAST(REPLACE(taxamt, ',', '.') AS FLOAT64)
+
+ AS taxamt,
+        
+
+  CAST(REPLACE(freight, ',', '.') AS FLOAT64)
+
+ AS freight,
+        
+
+  CAST(REPLACE(totaldue, ',', '.') AS FLOAT64)
+
+ AS totaldue,
+        comment
+
+    from source
+
+)
+
+select * from renamed;
+
+
+[0m02:16:39.244003 [debug] [Thread-1  ]: Writing injected SQL for node "model.airflow_dbt.stg_date"
+[0m02:16:39.245402 [debug] [Thread-1  ]: Began executing node model.airflow_dbt.stg_date
+[0m02:16:39.247911 [debug] [Thread-1  ]: Writing runtime sql for node "model.airflow_dbt.stg_date"
+[0m02:16:39.248912 [debug] [Thread-1  ]: On model.airflow_dbt.stg_date: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_date"} */
+
+
+  create or replace view `elt-project-427017`.`sales_db_staging`.`stg_date`
+  OPTIONS()
+  as with date_dim as (
+
+    
+    
+with base_dates as (
+    
+    with date_spine as
+(
+
+    
+
+
+
+
+
+with rawdata as (
+
+    
+
+    
+
+    with p as (
+        select 0 as generated_number union all select 1
+    ), unioned as (
+
+    select
+
+    
+    p0.generated_number * power(2, 0)
+     + 
+    
+    p1.generated_number * power(2, 1)
+     + 
+    
+    p2.generated_number * power(2, 2)
+     + 
+    
+    p3.generated_number * power(2, 3)
+     + 
+    
+    p4.generated_number * power(2, 4)
+     + 
+    
+    p5.generated_number * power(2, 5)
+     + 
+    
+    p6.generated_number * power(2, 6)
+     + 
+    
+    p7.generated_number * power(2, 7)
+     + 
+    
+    p8.generated_number * power(2, 8)
+     + 
+    
+    p9.generated_number * power(2, 9)
+     + 
+    
+    p10.generated_number * power(2, 10)
+    
+    
+    + 1
+    as generated_number
+
+    from
+
+    
+    p as p0
+     cross join 
+    
+    p as p1
+     cross join 
+    
+    p as p2
+     cross join 
+    
+    p as p3
+     cross join 
+    
+    p as p4
+     cross join 
+    
+    p as p5
+     cross join 
+    
+    p as p6
+     cross join 
+    
+    p as p7
+     cross join 
+    
+    p as p8
+     cross join 
+    
+    p as p9
+     cross join 
+    
+    p as p10
+    
+    
+
+    )
+
+    select *
+    from unioned
+    where generated_number <= 1460
+    order by generated_number
+
+
+
+),
+
+all_periods as (
+
+    select (
+        
+
+        datetime_add(
+            cast( cast('2011-01-01' as datetime ) as datetime),
+        interval (row_number() over (order by 1) - 1) day
+        )
+
+
+    ) as date_day
+    from rawdata
+
+),
+
+filtered as (
+
+    select *
+    from all_periods
+    where date_day <= cast('2014-12-31' as datetime )
+
+)
+
+select * from filtered
+
+
+
+)
+select
+    cast(d.date_day as timestamp) as date_day
+from
+    date_spine d
+
+
+),
+dates_with_prior_year_dates as (
+
+    select
+        cast(d.date_day as date) as date_day,
+        cast(
+
+        datetime_add(
+            cast( d.date_day as datetime),
+        interval -1 year
+        )
+
+ as date) as prior_year_date_day,
+        cast(
+
+        datetime_add(
+            cast( d.date_day as datetime),
+        interval -364 day
+        )
+
+ as date) as prior_year_over_year_date_day
+    from
+    	base_dates d
+
+)
+select
+    d.date_day,
+    cast(
+
+        datetime_add(
+            cast( d.date_day as datetime),
+        interval -1 day
+        )
+
+ as date) as prior_date_day,
+    cast(
+
+        datetime_add(
+            cast( d.date_day as datetime),
+        interval 1 day
+        )
+
+ as date) as next_date_day,
+    d.prior_year_date_day as prior_year_date_day,
+    d.prior_year_over_year_date_day,
+    extract(dayofweek from d.date_day) as day_of_week,
+    case
+        -- Shift start of week from Sunday (1) to Monday (2)
+        when extract(dayofweek from d.date_day) = 1 then 7
+        else extract(dayofweek from d.date_day) - 1
+    end as day_of_week_iso,
+    format_date('%A', cast(d.date_day as date)) as day_of_week_name,
+    format_date('%a', cast(d.date_day as date)) as day_of_week_name_short,
+    extract(day from d.date_day) as day_of_month,
+    extract(dayofyear from d.date_day) as day_of_year,
+
+    cast(timestamp_trunc(
+        cast(d.date_day as timestamp),
+        week
+    ) as date) as week_start_date,
+    cast(
+        
+
+        datetime_add(
+            cast( 
+
+        datetime_add(
+            cast( timestamp_trunc(
+        cast(d.date_day as timestamp),
+        week
+    ) as datetime),
+        interval 1 week
+        )
+
+ as datetime),
+        interval -1 day
+        )
+
+
+        as date) as week_end_date,
+    cast(timestamp_trunc(
+        cast(d.prior_year_over_year_date_day as timestamp),
+        week
+    ) as date) as prior_year_week_start_date,
+    cast(
+        
+
+        datetime_add(
+            cast( 
+
+        datetime_add(
+            cast( timestamp_trunc(
+        cast(d.prior_year_over_year_date_day as timestamp),
+        week
+    ) as datetime),
+        interval 1 week
+        )
+
+ as datetime),
+        interval -1 day
+        )
+
+
+        as date) as prior_year_week_end_date,
+    cast(extract(week from d.date_day) as INT64) as week_of_year,
+
+    cast(timestamp_trunc(
+        cast(d.date_day as timestamp),
+        isoweek
+    ) as date) as iso_week_start_date,
+    cast(
+
+        datetime_add(
+            cast( cast(timestamp_trunc(
+        cast(d.date_day as timestamp),
+        isoweek
+    ) as date) as datetime),
+        interval 6 day
+        )
+
+ as date) as iso_week_end_date,
+    cast(timestamp_trunc(
+        cast(d.prior_year_over_year_date_day as timestamp),
+        isoweek
+    ) as date) as prior_year_iso_week_start_date,
+    cast(
+
+        datetime_add(
+            cast( cast(timestamp_trunc(
+        cast(d.prior_year_over_year_date_day as timestamp),
+        isoweek
+    ) as date) as datetime),
+        interval 6 day
+        )
+
+ as date) as prior_year_iso_week_end_date,
+    cast(extract(isoweek from d.date_day) as INT64) as iso_week_of_year,
+
+    cast(extract(week from d.prior_year_over_year_date_day) as INT64) as prior_year_week_of_year,
+    cast(extract(isoweek from d.prior_year_over_year_date_day) as INT64) as prior_year_iso_week_of_year,
+
+    cast(extract(month from d.date_day) as INT64) as month_of_year,
+    format_date('%B', cast(d.date_day as date))  as month_name,
+    format_date('%b', cast(d.date_day as date))  as month_name_short,
+
+    cast(timestamp_trunc(
+        cast(d.date_day as timestamp),
+        month
+    ) as date) as month_start_date,
+    cast(cast(
+        
+
+        datetime_add(
+            cast( 
+
+        datetime_add(
+            cast( timestamp_trunc(
+        cast(d.date_day as timestamp),
+        month
+    ) as datetime),
+        interval 1 month
+        )
+
+ as datetime),
+        interval -1 day
+        )
+
+
+        as date) as date) as month_end_date,
+
+    cast(timestamp_trunc(
+        cast(d.prior_year_date_day as timestamp),
+        month
+    ) as date) as prior_year_month_start_date,
+    cast(cast(
+        
+
+        datetime_add(
+            cast( 
+
+        datetime_add(
+            cast( timestamp_trunc(
+        cast(d.prior_year_date_day as timestamp),
+        month
+    ) as datetime),
+        interval 1 month
+        )
+
+ as datetime),
+        interval -1 day
+        )
+
+
+        as date) as date) as prior_year_month_end_date,
+
+    cast(extract(quarter from d.date_day) as INT64) as quarter_of_year,
+    cast(timestamp_trunc(
+        cast(d.date_day as timestamp),
+        quarter
+    ) as date) as quarter_start_date,
+    cast(cast(
+        
+
+        datetime_add(
+            cast( 
+
+        datetime_add(
+            cast( timestamp_trunc(
+        cast(d.date_day as timestamp),
+        quarter
+    ) as datetime),
+        interval 1 quarter
+        )
+
+ as datetime),
+        interval -1 day
+        )
+
+
+        as date) as date) as quarter_end_date,
+
+    cast(extract(year from d.date_day) as INT64) as year_number,
+    cast(timestamp_trunc(
+        cast(d.date_day as timestamp),
+        year
+    ) as date) as year_start_date,
+    cast(cast(
+        
+
+        datetime_add(
+            cast( 
+
+        datetime_add(
+            cast( timestamp_trunc(
+        cast(d.date_day as timestamp),
+        year
+    ) as datetime),
+        interval 1 year
+        )
+
+ as datetime),
+        interval -1 day
+        )
+
+
+        as date) as date) as year_end_date
+from
+    dates_with_prior_year_dates d
+order by 1
+
+
+
+)
+select 
+    *
+from date_dim;
+
+
+[0m02:16:39.877927 [debug] [Thread-1  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:d2d5bf81-aeb5-46c7-af30-b46eea48a237&page=queryresults
+[0m02:16:39.884951 [debug] [Thread-4  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:8abb684e-5096-4b34-83de-b75b22505eae&page=queryresults
+[0m02:16:40.563485 [debug] [Thread-3  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:7469674e-abc6-4fbc-8974-05c237d3e30c&page=queryresults
+[0m02:16:40.571397 [debug] [Thread-2  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:c12de10a-1e54-4b0e-9d35-7488079202a5&page=queryresults
+[0m02:16:40.947803 [debug] [Thread-4  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA45EDC0>]}
+[0m02:16:40.948844 [debug] [Thread-1  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C911AD60>]}
+[0m02:16:40.949901 [info ] [Thread-4  ]: 9 of 23 OK created sql view model sales_db_staging.stg_productsubcategory ...... [[32mCREATE VIEW (0 processed)[0m in 2.17s]
+[0m02:16:40.952801 [debug] [Thread-4  ]: Finished running node model.airflow_dbt.stg_productsubcategory
+[0m02:16:40.951834 [info ] [Thread-1  ]: 5 of 23 OK created sql view model sales_db_staging.stg_date .................... [[32mCREATE VIEW (0 processed)[0m in 4.66s]
+[0m02:16:40.952801 [debug] [Thread-4  ]: Began running node model.airflow_dbt.stg_salesorderheadersalesreason
+[0m02:16:40.953801 [debug] [Thread-1  ]: Finished running node model.airflow_dbt.stg_date
+[0m02:16:40.953801 [debug] [Thread-1  ]: Began running node model.airflow_dbt.stg_salesreason
+[0m02:16:40.953801 [info ] [Thread-4  ]: 12 of 23 START sql view model sales_db_staging.stg_salesorderheadersalesreason . [RUN]
+[0m02:16:40.955867 [info ] [Thread-1  ]: 13 of 23 START sql view model sales_db_staging.stg_salesreason ................. [RUN]
+[0m02:16:40.956723 [debug] [Thread-4  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_productsubcategory, now model.airflow_dbt.stg_salesorderheadersalesreason)
+[0m02:16:40.956872 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_date, now model.airflow_dbt.stg_salesreason)
+[0m02:16:40.956872 [debug] [Thread-4  ]: Began compiling node model.airflow_dbt.stg_salesorderheadersalesreason
+[0m02:16:40.957873 [debug] [Thread-1  ]: Began compiling node model.airflow_dbt.stg_salesreason
+[0m02:16:40.960873 [debug] [Thread-4  ]: Writing injected SQL for node "model.airflow_dbt.stg_salesorderheadersalesreason"
+[0m02:16:40.965474 [debug] [Thread-1  ]: Writing injected SQL for node "model.airflow_dbt.stg_salesreason"
+[0m02:16:40.965991 [debug] [Thread-4  ]: Began executing node model.airflow_dbt.stg_salesorderheadersalesreason
+[0m02:16:40.969042 [debug] [Thread-4  ]: Writing runtime sql for node "model.airflow_dbt.stg_salesorderheadersalesreason"
+[0m02:16:40.969996 [debug] [Thread-1  ]: Began executing node model.airflow_dbt.stg_salesreason
+[0m02:16:40.973099 [debug] [Thread-1  ]: Writing runtime sql for node "model.airflow_dbt.stg_salesreason"
+[0m02:16:40.973997 [debug] [Thread-4  ]: Opening a new connection, currently in state closed
+[0m02:16:40.975064 [debug] [Thread-4  ]: On model.airflow_dbt.stg_salesorderheadersalesreason: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_salesorderheadersalesreason"} */
+
+
+  create or replace view `elt-project-427017`.`sales_db_staging`.`stg_salesorderheadersalesreason`
+  OPTIONS()
+  as with source as (
+
+    select * from `elt-project-427017`.`sales_db`.`salesorderheadersalesreason`
+
+),
+
+renamed as (
+
+    select
+        salesorderid,
+        salesreasonid
+
+    from source
+
+)
+
+select * from renamed;
+
+
+[0m02:16:40.998462 [debug] [Thread-1  ]: Opening a new connection, currently in state closed
+[0m02:16:41.000462 [debug] [Thread-1  ]: On model.airflow_dbt.stg_salesreason: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_salesreason"} */
+
+
+  create or replace view `elt-project-427017`.`sales_db_staging`.`stg_salesreason`
+  OPTIONS()
+  as with source as (
+
+    select * from `elt-project-427017`.`sales_db`.`salesreason`
+
+),
+
+renamed as (
+
+    select
+        salesreasonid,
+        salesreason,
+        reasontype
+
+    from source
+
+)
+
+select * from renamed;
+
+
+[0m02:16:41.405844 [debug] [Thread-3  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA4AA8B0>]}
+[0m02:16:41.406850 [info ] [Thread-3  ]: 10 of 23 OK created sql view model sales_db_staging.stg_salesorderdetail ....... [[32mCREATE VIEW (0 processed)[0m in 2.29s]
+[0m02:16:41.408949 [debug] [Thread-3  ]: Finished running node model.airflow_dbt.stg_salesorderdetail
+[0m02:16:41.408949 [debug] [Thread-3  ]: Began running node model.airflow_dbt.stg_salesterritory
+[0m02:16:41.409850 [info ] [Thread-3  ]: 14 of 23 START sql view model sales_db_staging.stg_salesterritory .............. [RUN]
+[0m02:16:41.410850 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_salesorderdetail, now model.airflow_dbt.stg_salesterritory)
+[0m02:16:41.411851 [debug] [Thread-3  ]: Began compiling node model.airflow_dbt.stg_salesterritory
+[0m02:16:41.415870 [debug] [Thread-3  ]: Writing injected SQL for node "model.airflow_dbt.stg_salesterritory"
+[0m02:16:41.416876 [debug] [Thread-3  ]: Began executing node model.airflow_dbt.stg_salesterritory
+[0m02:16:41.419400 [debug] [Thread-3  ]: Writing runtime sql for node "model.airflow_dbt.stg_salesterritory"
+[0m02:16:41.421401 [debug] [Thread-2  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA4AAFD0>]}
+[0m02:16:41.423402 [info ] [Thread-2  ]: 11 of 23 OK created sql view model sales_db_staging.stg_salesorderheader ....... [[32mCREATE VIEW (0 processed)[0m in 2.26s]
+[0m02:16:41.423402 [debug] [Thread-3  ]: Opening a new connection, currently in state closed
+[0m02:16:41.424401 [debug] [Thread-2  ]: Finished running node model.airflow_dbt.stg_salesorderheader
+[0m02:16:41.425400 [debug] [Thread-2  ]: Began running node model.airflow_dbt.stg_specialoffer
+[0m02:16:41.426913 [debug] [Thread-3  ]: On model.airflow_dbt.stg_salesterritory: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_salesterritory"} */
+
+
+  create or replace view `elt-project-427017`.`sales_db_staging`.`stg_salesterritory`
+  OPTIONS()
+  as with source as (
+
+    select * from `elt-project-427017`.`sales_db`.`salesterritory`
+
+),
+
+renamed as (
+
+    select
+        territoryid,
+        salesterritoryname,
+        countryregioncode,
+        `group`,
+        
+
+  CAST(REPLACE(salesytd, ',', '.') AS FLOAT64)
+
+ AS salesytd,
+        
+
+  CAST(REPLACE(saleslastyear, ',', '.') AS FLOAT64)
+
+ AS saleslastyear,
+        
+
+  CAST(REPLACE(costytd, ',', '.') AS FLOAT64)
+
+ AS costytd,
+        
+
+  CAST(REPLACE(costlastyear, ',', '.') AS FLOAT64)
+
+ AS costlastyear,
+        
+
+    from source
+
+)
+
+select * from renamed;
+
+
+[0m02:16:41.427913 [info ] [Thread-2  ]: 15 of 23 START sql view model sales_db_staging.stg_specialoffer ................ [RUN]
+[0m02:16:41.451454 [debug] [Thread-2  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_salesorderheader, now model.airflow_dbt.stg_specialoffer)
+[0m02:16:41.451454 [debug] [Thread-2  ]: Began compiling node model.airflow_dbt.stg_specialoffer
+[0m02:16:41.454962 [debug] [Thread-2  ]: Writing injected SQL for node "model.airflow_dbt.stg_specialoffer"
+[0m02:16:41.456473 [debug] [Thread-2  ]: Began executing node model.airflow_dbt.stg_specialoffer
+[0m02:16:41.459481 [debug] [Thread-2  ]: Writing runtime sql for node "model.airflow_dbt.stg_specialoffer"
+[0m02:16:41.460481 [debug] [Thread-2  ]: Opening a new connection, currently in state closed
+[0m02:16:41.461480 [debug] [Thread-2  ]: On model.airflow_dbt.stg_specialoffer: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_specialoffer"} */
+
+
+  create or replace view `elt-project-427017`.`sales_db_staging`.`stg_specialoffer`
+  OPTIONS()
+  as with source as (
+
+    select * from `elt-project-427017`.`sales_db`.`specialoffer`
+
+),
+
+renamed as (
+
+    select
+        specialofferid,
+        description,
+        
+
+  CAST(REPLACE(discountpct, ',', '.') AS FLOAT64)
+
+ AS salesytd,
+        type,
+        category,
+        startdate,
+        enddate,
+        minqty,
+        maxqty
+    from source
+
+)
+
+select * from renamed;
+
+
+[0m02:16:42.340028 [debug] [Thread-1  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:82ca721b-1299-43f3-94a0-25c93282f615&page=queryresults
+[0m02:16:42.341027 [debug] [Thread-4  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:077c7411-57f7-4e04-b692-506f5fbbd6c2&page=queryresults
+[0m02:16:42.525734 [debug] [Thread-2  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:8af75e09-d3f0-4b10-a93f-f4827ec7ed00&page=queryresults
+[0m02:16:42.654922 [debug] [Thread-3  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:0e2478b6-e21b-4d65-9343-ae1589698c71&page=queryresults
+[0m02:16:43.170234 [debug] [Thread-4  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA565DC0>]}
+[0m02:16:43.170234 [info ] [Thread-4  ]: 12 of 23 OK created sql view model sales_db_staging.stg_salesorderheadersalesreason  [[32mCREATE VIEW (0 processed)[0m in 2.21s]
+[0m02:16:43.172225 [debug] [Thread-4  ]: Finished running node model.airflow_dbt.stg_salesorderheadersalesreason
+[0m02:16:43.172225 [debug] [Thread-4  ]: Began running node model.airflow_dbt.stg_stateprovince
+[0m02:16:43.173223 [info ] [Thread-4  ]: 16 of 23 START sql view model sales_db_staging.stg_stateprovince ............... [RUN]
+[0m02:16:43.174224 [debug] [Thread-4  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_salesorderheadersalesreason, now model.airflow_dbt.stg_stateprovince)
+[0m02:16:43.174224 [debug] [Thread-4  ]: Began compiling node model.airflow_dbt.stg_stateprovince
+[0m02:16:43.177768 [debug] [Thread-4  ]: Writing injected SQL for node "model.airflow_dbt.stg_stateprovince"
+[0m02:16:43.178769 [debug] [Thread-4  ]: Began executing node model.airflow_dbt.stg_stateprovince
+[0m02:16:43.181770 [debug] [Thread-4  ]: Writing runtime sql for node "model.airflow_dbt.stg_stateprovince"
+[0m02:16:43.182793 [debug] [Thread-4  ]: Opening a new connection, currently in state closed
+[0m02:16:43.183770 [debug] [Thread-4  ]: On model.airflow_dbt.stg_stateprovince: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_stateprovince"} */
+
+
+  create or replace view `elt-project-427017`.`sales_db_staging`.`stg_stateprovince`
+  OPTIONS()
+  as with source as (
+
+    select * from `elt-project-427017`.`sales_db`.`stateprovince`
+
+),
+
+renamed as (
+
+    select
+        stateprovinceid,
+        stateprovincecode,
+        countryregioncode,
+        isonlystateprovinceflag,
+        statprovincename,
+        territoryid
+
+    from source
+
+)
+
+select * from renamed;
+
+
+[0m02:16:43.226154 [debug] [Thread-1  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C4BCDF40>]}
+[0m02:16:43.226660 [info ] [Thread-1  ]: 13 of 23 OK created sql view model sales_db_staging.stg_salesreason ............ [[32mCREATE VIEW (0 processed)[0m in 2.27s]
+[0m02:16:43.227666 [debug] [Thread-1  ]: Finished running node model.airflow_dbt.stg_salesreason
+[0m02:16:43.228666 [debug] [Thread-1  ]: Began running node model.airflow_dbt.dimProduct
+[0m02:16:43.228666 [info ] [Thread-1  ]: 17 of 23 START sql table model sales_db_mart.dimProduct ........................ [RUN]
+[0m02:16:43.230667 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_salesreason, now model.airflow_dbt.dimProduct)
+[0m02:16:43.230667 [debug] [Thread-1  ]: Began compiling node model.airflow_dbt.dimProduct
+[0m02:16:43.235173 [debug] [Thread-1  ]: Writing injected SQL for node "model.airflow_dbt.dimProduct"
+[0m02:16:43.236180 [debug] [Thread-1  ]: Began executing node model.airflow_dbt.dimProduct
+[0m02:16:43.243660 [debug] [Thread-1  ]: Opening a new connection, currently in state closed
+[0m02:16:43.398017 [debug] [Thread-2  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA618EE0>]}
+[0m02:16:43.398960 [info ] [Thread-2  ]: 15 of 23 OK created sql view model sales_db_staging.stg_specialoffer ........... [[32mCREATE VIEW (0 processed)[0m in 1.95s]
+[0m02:16:43.398960 [debug] [Thread-2  ]: Finished running node model.airflow_dbt.stg_specialoffer
+[0m02:16:43.399918 [debug] [Thread-2  ]: Began running node model.airflow_dbt.dimDate
+[0m02:16:43.400919 [info ] [Thread-2  ]: 18 of 23 START sql table model sales_db_mart.dimDate ........................... [RUN]
+[0m02:16:43.401917 [debug] [Thread-2  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_specialoffer, now model.airflow_dbt.dimDate)
+[0m02:16:43.401917 [debug] [Thread-2  ]: Began compiling node model.airflow_dbt.dimDate
+[0m02:16:43.406244 [debug] [Thread-2  ]: Opening a new connection, currently in state closed
+[0m02:16:43.407203 [debug] [Thread-2  ]: On model.airflow_dbt.dimDate: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.dimDate"} */
+
+
+        select 
+
+    datetime_diff(
+        cast(cast('2014-12-31' as datetime ) as datetime),
+        cast(cast('2011-01-01' as datetime ) as datetime),
+        day
+    )
+
+  
+[0m02:16:43.431672 [debug] [Thread-3  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C9110FD0>]}
+[0m02:16:43.433671 [info ] [Thread-3  ]: 14 of 23 OK created sql view model sales_db_staging.stg_salesterritory ......... [[32mCREATE VIEW (0 processed)[0m in 2.02s]
+[0m02:16:43.433671 [debug] [Thread-3  ]: Finished running node model.airflow_dbt.stg_salesterritory
+[0m02:16:43.435177 [debug] [Thread-3  ]: Began running node model.airflow_dbt.fctSales
+[0m02:16:43.435177 [info ] [Thread-3  ]: 19 of 23 START sql table model sales_db_mart.fctSales .......................... [RUN]
+[0m02:16:43.436222 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_salesterritory, now model.airflow_dbt.fctSales)
+[0m02:16:43.437328 [debug] [Thread-3  ]: Began compiling node model.airflow_dbt.fctSales
+[0m02:16:43.514149 [debug] [Thread-3  ]: Writing injected SQL for node "model.airflow_dbt.fctSales"
+[0m02:16:43.517026 [debug] [Thread-3  ]: Began executing node model.airflow_dbt.fctSales
+[0m02:16:43.520043 [debug] [Thread-3  ]: Opening a new connection, currently in state closed
+[0m02:16:44.267880 [debug] [Thread-4  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:a415e568-9ae8-45c5-ae8b-b5b6d0f8b2f9&page=queryresults
+[0m02:16:44.629021 [debug] [Thread-1  ]: Writing runtime sql for node "model.airflow_dbt.dimProduct"
+[0m02:16:44.630921 [debug] [Thread-1  ]: On model.airflow_dbt.dimProduct: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.dimProduct"} */
+
+  
+    
+
+    create or replace table `elt-project-427017`.`sales_db_mart`.`dimProduct`
+      
+    
+    
+
+    OPTIONS()
+    as (
+      select
+    to_hex(md5(cast(coalesce(cast(stg_product.productid as string), '_dbt_utils_surrogate_key_null_') as string))) as product_key,
+    stg_product.productid,
+    stg_product.productname as product_name,
+    stg_product.productnumber,
+    stg_product.color,
+    stg_product.daystomanufacture,
+	stg_product.safetystocklevel,
+    stg_product.standardcost,
+    stg_productsubcategory.productsubcategory as product_subcategory_name,
+    stg_productcategory.productcategory as product_category_name,
+    stg_product.sellstartdate,
+    stg_product.sellenddate
+from  `elt-project-427017`.`sales_db_staging`.`stg_product`
+left join  `elt-project-427017`.`sales_db_staging`.`stg_productsubcategory` on stg_product.productsubcategoryid = stg_productsubcategory.productsubcategoryid
+left join  `elt-project-427017`.`sales_db_staging`.`stg_productcategory` on stg_productsubcategory.productcategoryid = stg_productcategory.productcategoryid
+    );
+  
+[0m02:16:44.797736 [debug] [Thread-2  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:628846a9-4cd0-4c0b-a288-b670f90fd389&page=queryresults
+[0m02:16:44.845882 [debug] [Thread-3  ]: Writing runtime sql for node "model.airflow_dbt.fctSales"
+[0m02:16:44.847888 [debug] [Thread-3  ]: On model.airflow_dbt.fctSales: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.fctSales"} */
+
+  
+    
+
+    create or replace table `elt-project-427017`.`sales_db_mart`.`fctSales`
+      
+    
+    
+
+    OPTIONS()
+    as (
+      select
+    to_hex(md5(cast(coalesce(cast(stg_salesorderdetail.salesorderid as string), '_dbt_utils_surrogate_key_null_') || '-' || coalesce(cast(salesorderdetailid as string), '_dbt_utils_surrogate_key_null_') as string))) as sales_key,
+    to_hex(md5(cast(coalesce(cast(productid as string), '_dbt_utils_surrogate_key_null_') as string))) as product_key,
+    to_hex(md5(cast(coalesce(cast(customerid as string), '_dbt_utils_surrogate_key_null_') as string))) as customer_key,
+    to_hex(md5(cast(coalesce(cast(specialofferid as string), '_dbt_utils_surrogate_key_null_') as string))) as special_offer_key,
+    to_hex(md5(cast(coalesce(cast(stg_salesorderheadersalesreason.salesreasonid as string), '_dbt_utils_surrogate_key_null_') as string))) as sales_reason_key,
+    to_hex(md5(cast(coalesce(cast(orderdate as string), '_dbt_utils_surrogate_key_null_') as string))) as order_date_key,
+    to_hex(md5(cast(coalesce(cast(shipdate as string), '_dbt_utils_surrogate_key_null_') as string))) as ship_date_key,
+    to_hex(md5(cast(coalesce(cast(duedate as string), '_dbt_utils_surrogate_key_null_') as string))) as due_date_key,
+    to_hex(md5(cast(coalesce(cast(territoryid as string), '_dbt_utils_surrogate_key_null_') as string))) as territory_key,
+    orderdate,
+    onlineorderflag,
+    stg_salesorderdetail.specialofferid as specialoffer,
+    stg_salesorderheadersalesreason.salesreasonid as salesreason,
+    stg_salesorderdetail.unitpricediscount as unitpricediscount,
+    stg_salesorderdetail.unitprice,
+    stg_salesorderdetail.orderqty,
+    stg_salesorderdetail.linetotal as salesamount,
+    case when stg_salesorderdetail.unitpricediscount > 0
+        then stg_salesorderdetail.linetotal * stg_salesorderdetail.unitpricediscount 
+        else stg_salesorderdetail.linetotal
+        end as totaldiscount,
+    stg_salesorderheader.taxamt 
+from `elt-project-427017`.`sales_db_staging`.`stg_salesorderdetail`
+inner join  `elt-project-427017`.`sales_db_staging`.`stg_salesorderheader` on stg_salesorderdetail.salesorderid = stg_salesorderheader.salesorderid
+left join `elt-project-427017`.`sales_db_staging`.`stg_salesorderheadersalesreason` on stg_salesorderheader.salesorderid = stg_salesorderheadersalesreason.salesorderid
+    );
+  
+[0m02:16:45.197601 [debug] [Thread-4  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA7ABF70>]}
+[0m02:16:45.198613 [info ] [Thread-4  ]: 16 of 23 OK created sql view model sales_db_staging.stg_stateprovince .......... [[32mCREATE VIEW (0 processed)[0m in 2.02s]
+[0m02:16:45.199612 [debug] [Thread-4  ]: Finished running node model.airflow_dbt.stg_stateprovince
+[0m02:16:45.200616 [debug] [Thread-4  ]: Began running node model.airflow_dbt.dimSalesReason
+[0m02:16:45.200616 [info ] [Thread-4  ]: 20 of 23 START sql table model sales_db_mart.dimSalesReason .................... [RUN]
+[0m02:16:45.202653 [debug] [Thread-4  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_stateprovince, now model.airflow_dbt.dimSalesReason)
+[0m02:16:45.203661 [debug] [Thread-4  ]: Began compiling node model.airflow_dbt.dimSalesReason
+[0m02:16:45.207252 [debug] [Thread-4  ]: Writing injected SQL for node "model.airflow_dbt.dimSalesReason"
+[0m02:16:45.208267 [debug] [Thread-4  ]: Began executing node model.airflow_dbt.dimSalesReason
+[0m02:16:45.211293 [debug] [Thread-4  ]: Writing runtime sql for node "model.airflow_dbt.dimSalesReason"
+[0m02:16:45.212284 [debug] [Thread-4  ]: Opening a new connection, currently in state closed
+[0m02:16:45.213266 [debug] [Thread-4  ]: On model.airflow_dbt.dimSalesReason: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.dimSalesReason"} */
+
+  
+    
+
+    create or replace table `elt-project-427017`.`sales_db_mart`.`dimSalesReason`
+      
+    
+    
+
+    OPTIONS()
+    as (
+      select 
+     to_hex(md5(cast(coalesce(cast(stg_salesreason.salesreasonid as string), '_dbt_utils_surrogate_key_null_') as string))) as sales_reason_key,
+    salesreasonid,
+    salesreason,
+    reasontype
+
+from `elt-project-427017`.`sales_db_staging`.`stg_salesreason`
+    );
+  
+[0m02:16:45.425140 [debug] [Thread-1  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:45895fa6-53b0-4de4-92c7-221a13b3cd0f&page=queryresults
+[0m02:16:46.216795 [debug] [Thread-3  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:c8f039ec-9df1-4a78-bcb0-f064e20b9c42&page=queryresults
+[0m02:16:46.744119 [debug] [Thread-2  ]: Writing injected SQL for node "model.airflow_dbt.dimDate"
+[0m02:16:46.745119 [debug] [Thread-2  ]: Began executing node model.airflow_dbt.dimDate
+[0m02:16:47.278371 [debug] [Thread-2  ]: Writing runtime sql for node "model.airflow_dbt.dimDate"
+[0m02:16:47.279422 [debug] [Thread-2  ]: On model.airflow_dbt.dimDate: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.dimDate"} */
+
+  
+    
+
+    create or replace table `elt-project-427017`.`sales_db_mart`.`dimDate`
+      
+    
+    
+
+    OPTIONS()
+    as (
+      -- CTE to create a date dimension from the stg_date table
+with date_dimension as (
+    select * from `elt-project-427017`.`sales_db_staging`.`stg_date`
+),
+
+-- CTE to generate a full date range from start_date to end_date using dbt_date.get_base_dates macro
+full_dt as (
+    
+    with date_spine as
+(
+
+    
+
+
+
+
+
+with rawdata as (
+
+    
+
+    
+
+    with p as (
+        select 0 as generated_number union all select 1
+    ), unioned as (
+
+    select
+
+    
+    p0.generated_number * power(2, 0)
+     + 
+    
+    p1.generated_number * power(2, 1)
+     + 
+    
+    p2.generated_number * power(2, 2)
+     + 
+    
+    p3.generated_number * power(2, 3)
+     + 
+    
+    p4.generated_number * power(2, 4)
+     + 
+    
+    p5.generated_number * power(2, 5)
+     + 
+    
+    p6.generated_number * power(2, 6)
+     + 
+    
+    p7.generated_number * power(2, 7)
+     + 
+    
+    p8.generated_number * power(2, 8)
+     + 
+    
+    p9.generated_number * power(2, 9)
+     + 
+    
+    p10.generated_number * power(2, 10)
+    
+    
+    + 1
+    as generated_number
+
+    from
+
+    
+    p as p0
+     cross join 
+    
+    p as p1
+     cross join 
+    
+    p as p2
+     cross join 
+    
+    p as p3
+     cross join 
+    
+    p as p4
+     cross join 
+    
+    p as p5
+     cross join 
+    
+    p as p6
+     cross join 
+    
+    p as p7
+     cross join 
+    
+    p as p8
+     cross join 
+    
+    p as p9
+     cross join 
+    
+    p as p10
+    
+    
+
+    )
+
+    select *
+    from unioned
+    where generated_number <= 1460
+    order by generated_number
+
+
+
+),
+
+all_periods as (
+
+    select (
+        
+
+        datetime_add(
+            cast( cast('2011-01-01' as datetime ) as datetime),
+        interval (row_number() over (order by 1) - 1) day
+        )
+
+
+    ) as date_day
+    from rawdata
+
+),
+
+filtered as (
+
+    select *
+    from all_periods
+    where date_day <= cast('2014-12-31' as datetime )
+
+)
+
+select * from filtered
+
+
+
+)
+select
+    cast(d.date_day as timestamp) as date_day
+from
+    date_spine d
+
+
+),
+
+-- CTE to join the date dimension with the full date range and perform various timezone conversions
+full_dt_tr as (
+select
+    d.*,
+    f.date_day as fulldt,
+    timestamp(datetime(f.date_day, 'America/New_York')) as dulldtz,
+    timestamp(datetime(f.date_day, 'America/New_York')) as dulldtzt,
+    timestamp(datetime(f.date_day, 'America/New_York')) as test,
+    --f.date_day  AT TIME ZONE 'PST' AS "direct_pst",
+    TIMESTAMP(f.date_day) AS direct_dts,
+    TIMESTAMP(f.date_day) AS ts_utc
+from
+    date_dimension d
+    left join full_dt f on d.date_day = cast(f.date_day as date)
+)
+
+-- Final select statement to generate the date_key and select all columns from full_dt_tr
+select 
+    to_hex(md5(cast(coalesce(cast(direct_dts as string), '_dbt_utils_surrogate_key_null_') as string))) as date_key,
+    *
+From full_dt_tr
+    );
+  
+[0m02:16:47.422727 [debug] [Thread-4  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:da331a3f-50ec-489b-8c30-6404d13ea6c5&page=queryresults
+[0m02:16:48.122866 [debug] [Thread-2  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:67a2a09a-3c14-4089-8cbf-be3e3ca622fb&page=queryresults
+[0m02:16:48.465188 [debug] [Thread-1  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA4A6670>]}
+[0m02:16:48.466169 [info ] [Thread-1  ]: 17 of 23 OK created sql table model sales_db_mart.dimProduct ................... [[32mCREATE TABLE (504.0 rows, 50.7 KiB processed)[0m in 5.24s]
+[0m02:16:48.468176 [debug] [Thread-1  ]: Finished running node model.airflow_dbt.dimProduct
+[0m02:16:48.468176 [debug] [Thread-1  ]: Began running node model.airflow_dbt.dimOrderSpecialOffer
+[0m02:16:48.469210 [info ] [Thread-1  ]: 21 of 23 START sql table model sales_db_mart.dimOrderSpecialOffer .............. [RUN]
+[0m02:16:48.470175 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.dimProduct, now model.airflow_dbt.dimOrderSpecialOffer)
+[0m02:16:48.470175 [debug] [Thread-1  ]: Began compiling node model.airflow_dbt.dimOrderSpecialOffer
+[0m02:16:48.474174 [debug] [Thread-1  ]: Writing injected SQL for node "model.airflow_dbt.dimOrderSpecialOffer"
+[0m02:16:48.475060 [debug] [Thread-1  ]: Began executing node model.airflow_dbt.dimOrderSpecialOffer
+[0m02:16:48.477580 [debug] [Thread-1  ]: Opening a new connection, currently in state closed
+[0m02:16:49.796928 [debug] [Thread-1  ]: Writing runtime sql for node "model.airflow_dbt.dimOrderSpecialOffer"
+[0m02:16:49.799454 [debug] [Thread-1  ]: On model.airflow_dbt.dimOrderSpecialOffer: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.dimOrderSpecialOffer"} */
+
+  
+    
+
+    create or replace table `elt-project-427017`.`sales_db_mart`.`dimOrderSpecialOffer`
+      
+    
+    
+
+    OPTIONS()
+    as (
+      select
+    to_hex(md5(cast(coalesce(cast(stg_specialoffer.specialofferid as string), '_dbt_utils_surrogate_key_null_') as string))) as special_offer_key,
+    specialofferid,
+    description,
+    salesytd,
+    type,
+    category,
+    startDate,
+    enddate,
+    minqty,
+    maxqty
+from `elt-project-427017`.`sales_db_staging`.`stg_specialoffer`
+    );
+  
+[0m02:16:49.923583 [debug] [Thread-4  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA7AD550>]}
+[0m02:16:49.923583 [info ] [Thread-4  ]: 20 of 23 OK created sql table model sales_db_mart.dimSalesReason ............... [[32mCREATE TABLE (10.0 rows, 305.0 Bytes processed)[0m in 4.72s]
+[0m02:16:49.925087 [debug] [Thread-4  ]: Finished running node model.airflow_dbt.dimSalesReason
+[0m02:16:49.926093 [debug] [Thread-4  ]: Began running node model.airflow_dbt.dimTerritory
+[0m02:16:49.926599 [info ] [Thread-4  ]: 22 of 23 START sql table model sales_db_mart.dimTerritory ...................... [RUN]
+[0m02:16:49.927234 [debug] [Thread-4  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.dimSalesReason, now model.airflow_dbt.dimTerritory)
+[0m02:16:49.927234 [debug] [Thread-4  ]: Began compiling node model.airflow_dbt.dimTerritory
+[0m02:16:49.931526 [debug] [Thread-4  ]: Writing injected SQL for node "model.airflow_dbt.dimTerritory"
+[0m02:16:49.932517 [debug] [Thread-4  ]: Began executing node model.airflow_dbt.dimTerritory
+[0m02:16:49.935944 [debug] [Thread-4  ]: Opening a new connection, currently in state closed
+[0m02:16:50.417725 [debug] [Thread-1  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:13186675-1836-49ca-a1b6-9803ecd8e21f&page=queryresults
+[0m02:16:50.699834 [debug] [Thread-3  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA6FE6A0>]}
+[0m02:16:50.699834 [info ] [Thread-3  ]: 19 of 23 OK created sql table model sales_db_mart.fctSales ..................... [[32mCREATE TABLE (131.9k rows, 10.9 MiB processed)[0m in 7.26s]
+[0m02:16:50.705346 [debug] [Thread-3  ]: Finished running node model.airflow_dbt.fctSales
+[0m02:16:50.705860 [debug] [Thread-3  ]: Began running node model.airflow_dbt.dimCustomer
+[0m02:16:50.706866 [info ] [Thread-3  ]: 23 of 23 START sql table model sales_db_mart.dimCustomer ....................... [RUN]
+[0m02:16:50.707866 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.fctSales, now model.airflow_dbt.dimCustomer)
+[0m02:16:50.708909 [debug] [Thread-3  ]: Began compiling node model.airflow_dbt.dimCustomer
+[0m02:16:50.712867 [debug] [Thread-3  ]: Writing injected SQL for node "model.airflow_dbt.dimCustomer"
+[0m02:16:50.713865 [debug] [Thread-3  ]: Began executing node model.airflow_dbt.dimCustomer
+[0m02:16:50.715884 [debug] [Thread-3  ]: Opening a new connection, currently in state closed
+[0m02:16:50.958743 [debug] [Thread-4  ]: Writing runtime sql for node "model.airflow_dbt.dimTerritory"
+[0m02:16:50.959741 [debug] [Thread-4  ]: On model.airflow_dbt.dimTerritory: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.dimTerritory"} */
+
+  
+    
+
+    create or replace table `elt-project-427017`.`sales_db_mart`.`dimTerritory`
+      
+    
+    
+
+    OPTIONS()
+    as (
+      select 
+     to_hex(md5(cast(coalesce(cast(stg_salesterritory.territoryid as string), '_dbt_utils_surrogate_key_null_') as string))) as territory_key,
+    territoryid, 
+    salesterritoryname, 
+    "Group" as territory_group, 
+    countryregioncode, 
+    costytd,  
+    salesytd, 
+    costlastyear,
+    saleslastyear
+from `elt-project-427017`.`sales_db_staging`.`stg_salesterritory`
+    );
+  
+[0m02:16:51.663820 [debug] [Thread-4  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:1ad93d6c-7f6a-4efb-b62a-aa1ef358a251&page=queryresults
+[0m02:16:52.116144 [debug] [Thread-3  ]: Writing runtime sql for node "model.airflow_dbt.dimCustomer"
+[0m02:16:52.117653 [debug] [Thread-3  ]: On model.airflow_dbt.dimCustomer: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.dimCustomer"} */
+
+  
+    
+
+    create or replace table `elt-project-427017`.`sales_db_mart`.`dimCustomer`
+      
+    
+    
+
+    OPTIONS()
+    as (
+      select
+    to_hex(md5(cast(coalesce(cast(stg_customer.customerid as string), '_dbt_utils_surrogate_key_null_') as string))) as customer_key,
+    stg_customer.customerid,
+    stg_person.businessentityid as personbusinessentityid,
+    stg_person.title,
+    stg_person.firstname || ' '|| lastname as fullname,
+    stg_person.houseownerflag, 
+    stg_person.occupation, 
+    stg_person.maritalstatus, 
+    stg_person.commutedistance, 
+    stg_person.education, 
+    stg_person.gender,
+    stg_person.numbercarsowned, 
+    stg_person.totalchildren, 
+    stg_person.birthdate, 
+    stg_person.datefirstpurchase,
+    stg_countryregion.countryregionname as country,
+    stg_address.city,
+    stg_stateprovince.statprovincename as state,
+    stg_address.postalcode,
+    stg_address.addressline1,
+    stg_address.addressline2
+from `elt-project-427017`.`sales_db_staging`.`stg_customer`
+left join `elt-project-427017`.`sales_db_staging`.`stg_person` on stg_customer.personid = stg_person.businessentityid
+left join `elt-project-427017`.`sales_db_staging`.`stg_businessentityaddress` on stg_businessentityaddress.businessentityid = stg_person.businessentityid
+left join `elt-project-427017`.`sales_db_staging`.`stg_address` on stg_address.addressid = stg_businessentityaddress.addressid
+left join `elt-project-427017`.`sales_db_staging`.`stg_stateprovince` on stg_stateprovince.stateprovinceid = stg_address.stateprovinceid
+left join `elt-project-427017`.`sales_db_staging`.`stg_countryregion` on stg_countryregion.countryregioncode = stg_stateprovince.countryregioncode
+where persontype = 'IN'
+and addresstypeid = 2
+    );
+  
+[0m02:16:52.596293 [debug] [Thread-2  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA507FA0>]}
+[0m02:16:52.597430 [info ] [Thread-2  ]: 18 of 23 OK created sql table model sales_db_mart.dimDate ...................... [[32mCREATE TABLE (1.5k rows, 0 processed)[0m in 9.20s]
+[0m02:16:52.598478 [debug] [Thread-2  ]: Finished running node model.airflow_dbt.dimDate
+[0m02:16:52.846769 [debug] [Thread-1  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142CA466910>]}
+[0m02:16:52.846769 [info ] [Thread-1  ]: 21 of 23 OK created sql table model sales_db_mart.dimOrderSpecialOffer ......... [[32mCREATE TABLE (16.0 rows, 2.0 KiB processed)[0m in 4.38s]
+[0m02:16:52.847768 [debug] [Thread-1  ]: Finished running node model.airflow_dbt.dimOrderSpecialOffer
+[0m02:16:53.651265 [debug] [Thread-3  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:53ddfe74-c6f1-4b64-a116-2ab2bf503c68&page=queryresults
+[0m02:16:54.525812 [debug] [Thread-4  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C911ADC0>]}
+[0m02:16:56.593103 [info ] [Thread-4  ]: 22 of 23 OK created sql table model sales_db_mart.dimTerritory ................. [[32mCREATE TABLE (10.0 rows, 623.0 Bytes processed)[0m in 4.60s]
+[0m02:16:56.594103 [debug] [Thread-4  ]: Finished running node model.airflow_dbt.dimTerritory
+[0m02:16:56.767505 [debug] [Thread-3  ]: Sending event: {'category': 'dbt', 'action': 'run_model', 'label': 'f85040fd-f8c3-4edc-9c59-8e8a8c6062d2', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C92EDDC0>]}
+[0m02:16:56.768505 [info ] [Thread-3  ]: 23 of 23 OK created sql table model sales_db_mart.dimCustomer .................. [[32mCREATE TABLE (18.5k rows, 4.3 MiB processed)[0m in 6.06s]
+[0m02:16:56.769488 [debug] [Thread-3  ]: Finished running node model.airflow_dbt.dimCustomer
+[0m02:16:56.771488 [debug] [MainThread]: Connection 'master' was properly closed.
+[0m02:16:56.771488 [debug] [MainThread]: Connection 'list_elt-project-427017' was properly closed.
+[0m02:16:56.772488 [debug] [MainThread]: Connection 'list_elt-project-427017' was properly closed.
+[0m02:16:56.772488 [debug] [MainThread]: Connection 'list_elt-project-427017_sales_db_staging' was properly closed.
+[0m02:16:56.772488 [debug] [MainThread]: Connection 'list_elt-project-427017_sales_db_mart' was properly closed.
+[0m02:16:56.772488 [debug] [MainThread]: Connection 'model.airflow_dbt.dimOrderSpecialOffer' was properly closed.
+[0m02:16:56.773487 [debug] [MainThread]: Connection 'model.airflow_dbt.dimDate' was properly closed.
+[0m02:16:56.773487 [debug] [MainThread]: Connection 'model.airflow_dbt.dimCustomer' was properly closed.
+[0m02:16:56.773487 [debug] [MainThread]: Connection 'model.airflow_dbt.dimTerritory' was properly closed.
+[0m02:16:56.773487 [info ] [MainThread]: 
+[0m02:16:56.774991 [info ] [MainThread]: Finished running 16 view models, 7 table models in 0 hours 0 minutes and 25.33 seconds (25.33s).
+[0m02:16:56.778484 [debug] [MainThread]: Command end result
+[0m02:16:56.822121 [info ] [MainThread]: 
+[0m02:16:56.823111 [info ] [MainThread]: [32mCompleted successfully[0m
+[0m02:16:56.824119 [info ] [MainThread]: 
+[0m02:16:56.825010 [info ] [MainThread]: Done. PASS=23 WARN=0 ERROR=0 SKIP=0 TOTAL=23
+[0m02:16:56.827031 [debug] [MainThread]: Command `dbt run` succeeded at 02:16:56.827031 after 31.89 seconds
+[0m02:16:56.827031 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'end', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C2C0FD00>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C52DDF70>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000142C4BCD280>]}
+[0m02:16:56.828041 [debug] [MainThread]: Flushing usage events
+[0m02:19:32.898951 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'start', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000156D77AFD00>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000156DA3445B0>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000156DA3447C0>]}
+
+
+============================== 02:19:32.902917 | d6b7eac7-0961-4f6c-a268-2ea554d8f334 ==============================
+[0m02:19:32.902917 [info ] [MainThread]: Running with dbt=1.8.3
+[0m02:19:32.903918 [debug] [MainThread]: running dbt with arguments {'printer_width': '80', 'indirect_selection': 'eager', 'log_cache_events': 'False', 'write_json': 'True', 'partial_parse': 'True', 'cache_selected_only': 'False', 'profiles_dir': 'C:\\Users\\destr\\dbt_learn\\airflow_dbt', 'fail_fast': 'False', 'warn_error': 'None', 'log_path': 'C:\\Users\\destr\\dbt_learn\\airflow_dbt\\logs', 'debug': 'False', 'version_check': 'True', 'use_colors': 'True', 'use_experimental_parser': 'False', 'no_print': 'None', 'quiet': 'False', 'empty': 'None', 'warn_error_options': 'WarnErrorOptions(include=[], exclude=[])', 'invocation_command': 'dbt docs generate', 'static_parser': 'True', 'log_format': 'default', 'target_path': 'None', 'introspect': 'True', 'send_anonymous_usage_stats': 'True'}
+[0m02:19:33.730334 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'project_id', 'label': 'd6b7eac7-0961-4f6c-a268-2ea554d8f334', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000156DCDD53A0>]}
+[0m02:19:33.772004 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'adapter_info', 'label': 'd6b7eac7-0961-4f6c-a268-2ea554d8f334', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000156DA2FFF70>]}
+[0m02:19:33.772951 [info ] [MainThread]: Registered adapter: bigquery=1.8.2
+[0m02:19:33.795043 [debug] [MainThread]: checksum: 30bd4080c2bc8dee5936f8f60083ffbe1c906859d0fd965607c2144031479456, vars: {}, profile: , target: , version: 1.8.3
+[0m02:19:33.976140 [debug] [MainThread]: Partial parsing enabled: 0 files deleted, 0 files added, 0 files changed.
+[0m02:19:33.976881 [debug] [MainThread]: Partial parsing enabled, no changes found, skipping parsing
+[0m02:19:34.020117 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'load_project', 'label': 'd6b7eac7-0961-4f6c-a268-2ea554d8f334', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000156DDCF3F40>]}
+[0m02:19:34.043184 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'resource_counts', 'label': 'd6b7eac7-0961-4f6c-a268-2ea554d8f334', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000156DDCD67C0>]}
+[0m02:19:34.043827 [info ] [MainThread]: Found 23 models, 19 data tests, 16 sources, 727 macros
+[0m02:19:34.044331 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'runnable_timing', 'label': 'd6b7eac7-0961-4f6c-a268-2ea554d8f334', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000156DDCD6850>]}
+[0m02:19:34.047026 [info ] [MainThread]: 
+[0m02:19:34.048062 [debug] [MainThread]: Acquiring new bigquery connection 'master'
+[0m02:19:34.053418 [debug] [ThreadPool]: Acquiring new bigquery connection 'list_elt-project-427017_sales_db_mart'
+[0m02:19:34.053932 [debug] [ThreadPool]: Acquiring new bigquery connection 'list_elt-project-427017_sales_db_staging'
+[0m02:19:34.054466 [debug] [ThreadPool]: Opening a new connection, currently in state init
+[0m02:19:34.054978 [debug] [ThreadPool]: Opening a new connection, currently in state init
+[0m02:19:34.941345 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'runnable_timing', 'label': 'd6b7eac7-0961-4f6c-a268-2ea554d8f334', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000156DCD52D30>]}
+[0m02:19:34.942385 [info ] [MainThread]: Concurrency: 4 threads (target='dev')
+[0m02:19:34.943344 [info ] [MainThread]: 
+[0m02:19:34.947417 [debug] [Thread-1  ]: Began running node model.airflow_dbt.stg_address
+[0m02:19:34.948427 [debug] [Thread-2  ]: Began running node model.airflow_dbt.stg_businessentityaddress
+[0m02:19:34.948427 [debug] [Thread-3  ]: Began running node model.airflow_dbt.stg_countryregion
+[0m02:19:34.948427 [debug] [Thread-4  ]: Began running node model.airflow_dbt.stg_customer
+[0m02:19:34.949426 [debug] [Thread-1  ]: Acquiring new bigquery connection 'model.airflow_dbt.stg_address'
+[0m02:19:34.950427 [debug] [Thread-2  ]: Acquiring new bigquery connection 'model.airflow_dbt.stg_businessentityaddress'
+[0m02:19:34.951427 [debug] [Thread-3  ]: Acquiring new bigquery connection 'model.airflow_dbt.stg_countryregion'
+[0m02:19:34.951427 [debug] [Thread-4  ]: Acquiring new bigquery connection 'model.airflow_dbt.stg_customer'
+[0m02:19:34.953430 [debug] [Thread-4  ]: Began compiling node model.airflow_dbt.stg_customer
+[0m02:19:34.952429 [debug] [Thread-1  ]: Began compiling node model.airflow_dbt.stg_address
+[0m02:19:34.953430 [debug] [Thread-3  ]: Began compiling node model.airflow_dbt.stg_countryregion
+[0m02:19:34.952429 [debug] [Thread-2  ]: Began compiling node model.airflow_dbt.stg_businessentityaddress
+[0m02:19:34.963942 [debug] [Thread-4  ]: Writing injected SQL for node "model.airflow_dbt.stg_customer"
+[0m02:19:34.967174 [debug] [Thread-1  ]: Writing injected SQL for node "model.airflow_dbt.stg_address"
+[0m02:19:34.970184 [debug] [Thread-3  ]: Writing injected SQL for node "model.airflow_dbt.stg_countryregion"
+[0m02:19:34.973185 [debug] [Thread-2  ]: Writing injected SQL for node "model.airflow_dbt.stg_businessentityaddress"
+[0m02:19:34.974184 [debug] [Thread-4  ]: Began executing node model.airflow_dbt.stg_customer
+[0m02:19:34.974184 [debug] [Thread-1  ]: Began executing node model.airflow_dbt.stg_address
+[0m02:19:34.975184 [debug] [Thread-3  ]: Began executing node model.airflow_dbt.stg_countryregion
+[0m02:19:34.975901 [debug] [Thread-4  ]: Finished running node model.airflow_dbt.stg_customer
+[0m02:19:34.976774 [debug] [Thread-1  ]: Finished running node model.airflow_dbt.stg_address
+[0m02:19:34.976774 [debug] [Thread-2  ]: Began executing node model.airflow_dbt.stg_businessentityaddress
+[0m02:19:34.977823 [debug] [Thread-3  ]: Finished running node model.airflow_dbt.stg_countryregion
+[0m02:19:34.978831 [debug] [Thread-4  ]: Began running node model.airflow_dbt.stg_date
+[0m02:19:34.978831 [debug] [Thread-1  ]: Began running node model.airflow_dbt.stg_person
+[0m02:19:34.979828 [debug] [Thread-2  ]: Finished running node model.airflow_dbt.stg_businessentityaddress
+[0m02:19:34.980827 [debug] [Thread-3  ]: Began running node model.airflow_dbt.stg_product
+[0m02:19:34.981828 [debug] [Thread-4  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_customer, now model.airflow_dbt.stg_date)
+[0m02:19:34.981828 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_address, now model.airflow_dbt.stg_person)
+[0m02:19:34.982827 [debug] [Thread-2  ]: Began running node model.airflow_dbt.stg_productcategory
+[0m02:19:34.982827 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_countryregion, now model.airflow_dbt.stg_product)
+[0m02:19:34.983829 [debug] [Thread-4  ]: Began compiling node model.airflow_dbt.stg_date
+[0m02:19:34.983829 [debug] [Thread-1  ]: Began compiling node model.airflow_dbt.stg_person
+[0m02:19:34.983829 [debug] [Thread-2  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_businessentityaddress, now model.airflow_dbt.stg_productcategory)
+[0m02:19:34.985336 [debug] [Thread-3  ]: Began compiling node model.airflow_dbt.stg_product
+[0m02:19:35.012494 [debug] [Thread-4  ]: Opening a new connection, currently in state closed
+[0m02:19:35.016008 [debug] [Thread-1  ]: Writing injected SQL for node "model.airflow_dbt.stg_person"
+[0m02:19:35.016514 [debug] [Thread-2  ]: Began compiling node model.airflow_dbt.stg_productcategory
+[0m02:19:35.019611 [debug] [Thread-3  ]: Writing injected SQL for node "model.airflow_dbt.stg_product"
+[0m02:19:35.021557 [debug] [Thread-4  ]: On model.airflow_dbt.stg_date: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.stg_date"} */
+
+
+        select 
+
+    datetime_diff(
+        cast(cast('2014-12-31' as datetime ) as datetime),
+        cast(cast('2011-01-01' as datetime ) as datetime),
+        day
+    )
+
+  
+[0m02:19:35.023620 [debug] [Thread-2  ]: Writing injected SQL for node "model.airflow_dbt.stg_productcategory"
+[0m02:19:35.045834 [debug] [Thread-1  ]: Began executing node model.airflow_dbt.stg_person
+[0m02:19:35.046796 [debug] [Thread-3  ]: Began executing node model.airflow_dbt.stg_product
+[0m02:19:35.048840 [debug] [Thread-1  ]: Finished running node model.airflow_dbt.stg_person
+[0m02:19:35.048840 [debug] [Thread-2  ]: Began executing node model.airflow_dbt.stg_productcategory
+[0m02:19:35.049838 [debug] [Thread-3  ]: Finished running node model.airflow_dbt.stg_product
+[0m02:19:35.050868 [debug] [Thread-1  ]: Began running node model.airflow_dbt.stg_productsubcategory
+[0m02:19:35.051840 [debug] [Thread-2  ]: Finished running node model.airflow_dbt.stg_productcategory
+[0m02:19:35.051840 [debug] [Thread-3  ]: Began running node model.airflow_dbt.stg_salesorderdetail
+[0m02:19:35.052839 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_person, now model.airflow_dbt.stg_productsubcategory)
+[0m02:19:35.052839 [debug] [Thread-2  ]: Began running node model.airflow_dbt.stg_salesorderheader
+[0m02:19:35.053838 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_product, now model.airflow_dbt.stg_salesorderdetail)
+[0m02:19:35.053838 [debug] [Thread-1  ]: Began compiling node model.airflow_dbt.stg_productsubcategory
+[0m02:19:35.053838 [debug] [Thread-2  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_productcategory, now model.airflow_dbt.stg_salesorderheader)
+[0m02:19:35.055343 [debug] [Thread-3  ]: Began compiling node model.airflow_dbt.stg_salesorderdetail
+[0m02:19:35.059285 [debug] [Thread-1  ]: Writing injected SQL for node "model.airflow_dbt.stg_productsubcategory"
+[0m02:19:35.059285 [debug] [Thread-2  ]: Began compiling node model.airflow_dbt.stg_salesorderheader
+[0m02:19:35.063286 [debug] [Thread-3  ]: Writing injected SQL for node "model.airflow_dbt.stg_salesorderdetail"
+[0m02:19:35.066863 [debug] [Thread-2  ]: Writing injected SQL for node "model.airflow_dbt.stg_salesorderheader"
+[0m02:19:35.067836 [debug] [Thread-1  ]: Began executing node model.airflow_dbt.stg_productsubcategory
+[0m02:19:35.068836 [debug] [Thread-3  ]: Began executing node model.airflow_dbt.stg_salesorderdetail
+[0m02:19:35.068836 [debug] [Thread-1  ]: Finished running node model.airflow_dbt.stg_productsubcategory
+[0m02:19:35.069836 [debug] [Thread-3  ]: Finished running node model.airflow_dbt.stg_salesorderdetail
+[0m02:19:35.070838 [debug] [Thread-2  ]: Began executing node model.airflow_dbt.stg_salesorderheader
+[0m02:19:35.070838 [debug] [Thread-1  ]: Began running node model.airflow_dbt.stg_salesorderheadersalesreason
+[0m02:19:35.071835 [debug] [Thread-3  ]: Began running node model.airflow_dbt.stg_salesreason
+[0m02:19:35.072861 [debug] [Thread-2  ]: Finished running node model.airflow_dbt.stg_salesorderheader
+[0m02:19:35.073836 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_productsubcategory, now model.airflow_dbt.stg_salesorderheadersalesreason)
+[0m02:19:35.073836 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_salesorderdetail, now model.airflow_dbt.stg_salesreason)
+[0m02:19:35.073836 [debug] [Thread-2  ]: Began running node model.airflow_dbt.stg_salesterritory
+[0m02:19:35.075404 [debug] [Thread-1  ]: Began compiling node model.airflow_dbt.stg_salesorderheadersalesreason
+[0m02:19:35.075909 [debug] [Thread-3  ]: Began compiling node model.airflow_dbt.stg_salesreason
+[0m02:19:35.076845 [debug] [Thread-2  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_salesorderheader, now model.airflow_dbt.stg_salesterritory)
+[0m02:19:35.079896 [debug] [Thread-1  ]: Writing injected SQL for node "model.airflow_dbt.stg_salesorderheadersalesreason"
+[0m02:19:35.082896 [debug] [Thread-3  ]: Writing injected SQL for node "model.airflow_dbt.stg_salesreason"
+[0m02:19:35.083897 [debug] [Thread-2  ]: Began compiling node model.airflow_dbt.stg_salesterritory
+[0m02:19:35.088074 [debug] [Thread-2  ]: Writing injected SQL for node "model.airflow_dbt.stg_salesterritory"
+[0m02:19:35.089073 [debug] [Thread-1  ]: Began executing node model.airflow_dbt.stg_salesorderheadersalesreason
+[0m02:19:35.090056 [debug] [Thread-3  ]: Began executing node model.airflow_dbt.stg_salesreason
+[0m02:19:35.091081 [debug] [Thread-1  ]: Finished running node model.airflow_dbt.stg_salesorderheadersalesreason
+[0m02:19:35.092057 [debug] [Thread-3  ]: Finished running node model.airflow_dbt.stg_salesreason
+[0m02:19:35.092057 [debug] [Thread-2  ]: Began executing node model.airflow_dbt.stg_salesterritory
+[0m02:19:35.093055 [debug] [Thread-1  ]: Began running node model.airflow_dbt.stg_specialoffer
+[0m02:19:35.093055 [debug] [Thread-3  ]: Began running node model.airflow_dbt.stg_stateprovince
+[0m02:19:35.094056 [debug] [Thread-2  ]: Finished running node model.airflow_dbt.stg_salesterritory
+[0m02:19:35.095075 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_salesorderheadersalesreason, now model.airflow_dbt.stg_specialoffer)
+[0m02:19:35.095698 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_salesreason, now model.airflow_dbt.stg_stateprovince)
+[0m02:19:35.095698 [debug] [Thread-2  ]: Began running node test.airflow_dbt.not_null_stg_customer_customerid.6418d30796
+[0m02:19:35.096703 [debug] [Thread-1  ]: Began compiling node model.airflow_dbt.stg_specialoffer
+[0m02:19:35.096703 [debug] [Thread-3  ]: Began compiling node model.airflow_dbt.stg_stateprovince
+[0m02:19:35.097702 [debug] [Thread-2  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_salesterritory, now test.airflow_dbt.not_null_stg_customer_customerid.6418d30796)
+[0m02:19:35.100720 [debug] [Thread-1  ]: Writing injected SQL for node "model.airflow_dbt.stg_specialoffer"
+[0m02:19:35.102702 [debug] [Thread-3  ]: Writing injected SQL for node "model.airflow_dbt.stg_stateprovince"
+[0m02:19:35.103703 [debug] [Thread-2  ]: Began compiling node test.airflow_dbt.not_null_stg_customer_customerid.6418d30796
+[0m02:19:35.105211 [debug] [Thread-1  ]: Began executing node model.airflow_dbt.stg_specialoffer
+[0m02:19:35.113869 [debug] [Thread-2  ]: Writing injected SQL for node "test.airflow_dbt.not_null_stg_customer_customerid.6418d30796"
+[0m02:19:35.115395 [debug] [Thread-3  ]: Began executing node model.airflow_dbt.stg_stateprovince
+[0m02:19:35.115919 [debug] [Thread-1  ]: Finished running node model.airflow_dbt.stg_specialoffer
+[0m02:19:35.116841 [debug] [Thread-3  ]: Finished running node model.airflow_dbt.stg_stateprovince
+[0m02:19:35.117970 [debug] [Thread-2  ]: Began executing node test.airflow_dbt.not_null_stg_customer_customerid.6418d30796
+[0m02:19:35.117970 [debug] [Thread-1  ]: Began running node test.airflow_dbt.unique_stg_customer_customerid.c2a326da40
+[0m02:19:35.118980 [debug] [Thread-3  ]: Began running node test.airflow_dbt.not_null_stg_address_addressid.b2c3ff1261
+[0m02:19:35.119970 [debug] [Thread-2  ]: Finished running node test.airflow_dbt.not_null_stg_customer_customerid.6418d30796
+[0m02:19:35.119970 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_specialoffer, now test.airflow_dbt.unique_stg_customer_customerid.c2a326da40)
+[0m02:19:35.120969 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_stateprovince, now test.airflow_dbt.not_null_stg_address_addressid.b2c3ff1261)
+[0m02:19:35.121969 [debug] [Thread-2  ]: Began running node test.airflow_dbt.unique_stg_address_addressid.5faede3af1
+[0m02:19:35.121969 [debug] [Thread-1  ]: Began compiling node test.airflow_dbt.unique_stg_customer_customerid.c2a326da40
+[0m02:19:35.122993 [debug] [Thread-3  ]: Began compiling node test.airflow_dbt.not_null_stg_address_addressid.b2c3ff1261
+[0m02:19:35.122993 [debug] [Thread-2  ]: Re-using an available connection from the pool (formerly test.airflow_dbt.not_null_stg_customer_customerid.6418d30796, now test.airflow_dbt.unique_stg_address_addressid.5faede3af1)
+[0m02:19:35.128901 [debug] [Thread-1  ]: Writing injected SQL for node "test.airflow_dbt.unique_stg_customer_customerid.c2a326da40"
+[0m02:19:35.132885 [debug] [Thread-3  ]: Writing injected SQL for node "test.airflow_dbt.not_null_stg_address_addressid.b2c3ff1261"
+[0m02:19:35.133885 [debug] [Thread-2  ]: Began compiling node test.airflow_dbt.unique_stg_address_addressid.5faede3af1
+[0m02:19:35.137962 [debug] [Thread-2  ]: Writing injected SQL for node "test.airflow_dbt.unique_stg_address_addressid.5faede3af1"
+[0m02:19:35.137962 [debug] [Thread-1  ]: Began executing node test.airflow_dbt.unique_stg_customer_customerid.c2a326da40
+[0m02:19:35.138941 [debug] [Thread-1  ]: Finished running node test.airflow_dbt.unique_stg_customer_customerid.c2a326da40
+[0m02:19:35.139942 [debug] [Thread-3  ]: Began executing node test.airflow_dbt.not_null_stg_address_addressid.b2c3ff1261
+[0m02:19:35.139942 [debug] [Thread-1  ]: Began running node test.airflow_dbt.unique_stg_countryregion_countryregioncode.69920521ee
+[0m02:19:35.140943 [debug] [Thread-2  ]: Began executing node test.airflow_dbt.unique_stg_address_addressid.5faede3af1
+[0m02:19:35.141943 [debug] [Thread-3  ]: Finished running node test.airflow_dbt.not_null_stg_address_addressid.b2c3ff1261
+[0m02:19:35.141943 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly test.airflow_dbt.unique_stg_customer_customerid.c2a326da40, now test.airflow_dbt.unique_stg_countryregion_countryregioncode.69920521ee)
+[0m02:19:35.142943 [debug] [Thread-2  ]: Finished running node test.airflow_dbt.unique_stg_address_addressid.5faede3af1
+[0m02:19:35.143942 [debug] [Thread-3  ]: Began running node test.airflow_dbt.accepted_values_stg_productcategory_productcategory__Bikes__Components__Clothing__Accessories.6b5165f5ae
+[0m02:19:35.143942 [debug] [Thread-1  ]: Began compiling node test.airflow_dbt.unique_stg_countryregion_countryregioncode.69920521ee
+[0m02:19:35.144968 [debug] [Thread-2  ]: Began running node test.airflow_dbt.not_null_stg_productcategory_productcategoryid.8121bfa386
+[0m02:19:35.144968 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly test.airflow_dbt.not_null_stg_address_addressid.b2c3ff1261, now test.airflow_dbt.accepted_values_stg_productcategory_productcategory__Bikes__Components__Clothing__Accessories.6b5165f5ae)
+[0m02:19:35.149156 [debug] [Thread-1  ]: Writing injected SQL for node "test.airflow_dbt.unique_stg_countryregion_countryregioncode.69920521ee"
+[0m02:19:35.150155 [debug] [Thread-2  ]: Re-using an available connection from the pool (formerly test.airflow_dbt.unique_stg_address_addressid.5faede3af1, now test.airflow_dbt.not_null_stg_productcategory_productcategoryid.8121bfa386)
+[0m02:19:35.150155 [debug] [Thread-3  ]: Began compiling node test.airflow_dbt.accepted_values_stg_productcategory_productcategory__Bikes__Components__Clothing__Accessories.6b5165f5ae
+[0m02:19:35.151156 [debug] [Thread-2  ]: Began compiling node test.airflow_dbt.not_null_stg_productcategory_productcategoryid.8121bfa386
+[0m02:19:35.158174 [debug] [Thread-3  ]: Writing injected SQL for node "test.airflow_dbt.accepted_values_stg_productcategory_productcategory__Bikes__Components__Clothing__Accessories.6b5165f5ae"
+[0m02:19:35.163196 [debug] [Thread-2  ]: Writing injected SQL for node "test.airflow_dbt.not_null_stg_productcategory_productcategoryid.8121bfa386"
+[0m02:19:35.163196 [debug] [Thread-1  ]: Began executing node test.airflow_dbt.unique_stg_countryregion_countryregioncode.69920521ee
+[0m02:19:35.164197 [debug] [Thread-3  ]: Began executing node test.airflow_dbt.accepted_values_stg_productcategory_productcategory__Bikes__Components__Clothing__Accessories.6b5165f5ae
+[0m02:19:35.165177 [debug] [Thread-1  ]: Finished running node test.airflow_dbt.unique_stg_countryregion_countryregioncode.69920521ee
+[0m02:19:35.165901 [debug] [Thread-3  ]: Finished running node test.airflow_dbt.accepted_values_stg_productcategory_productcategory__Bikes__Components__Clothing__Accessories.6b5165f5ae
+[0m02:19:35.166895 [debug] [Thread-2  ]: Began executing node test.airflow_dbt.not_null_stg_productcategory_productcategoryid.8121bfa386
+[0m02:19:35.166895 [debug] [Thread-1  ]: Began running node test.airflow_dbt.unique_stg_productcategory_productcategoryid.40f41ade89
+[0m02:19:35.168036 [debug] [Thread-3  ]: Began running node model.airflow_dbt.dimProduct
+[0m02:19:35.169061 [debug] [Thread-2  ]: Finished running node test.airflow_dbt.not_null_stg_productcategory_productcategoryid.8121bfa386
+[0m02:19:35.169061 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly test.airflow_dbt.unique_stg_countryregion_countryregioncode.69920521ee, now test.airflow_dbt.unique_stg_productcategory_productcategoryid.40f41ade89)
+[0m02:19:35.170034 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly test.airflow_dbt.accepted_values_stg_productcategory_productcategory__Bikes__Components__Clothing__Accessories.6b5165f5ae, now model.airflow_dbt.dimProduct)
+[0m02:19:35.170034 [debug] [Thread-2  ]: Began running node model.airflow_dbt.fctSales
+[0m02:19:35.171033 [debug] [Thread-1  ]: Began compiling node test.airflow_dbt.unique_stg_productcategory_productcategoryid.40f41ade89
+[0m02:19:35.171033 [debug] [Thread-3  ]: Began compiling node model.airflow_dbt.dimProduct
+[0m02:19:35.172034 [debug] [Thread-2  ]: Re-using an available connection from the pool (formerly test.airflow_dbt.not_null_stg_productcategory_productcategoryid.8121bfa386, now model.airflow_dbt.fctSales)
+[0m02:19:35.176116 [debug] [Thread-1  ]: Writing injected SQL for node "test.airflow_dbt.unique_stg_productcategory_productcategoryid.40f41ade89"
+[0m02:19:35.187657 [debug] [Thread-3  ]: Writing injected SQL for node "model.airflow_dbt.dimProduct"
+[0m02:19:35.187657 [debug] [Thread-2  ]: Began compiling node model.airflow_dbt.fctSales
+[0m02:19:35.188783 [debug] [Thread-1  ]: Began executing node test.airflow_dbt.unique_stg_productcategory_productcategoryid.40f41ade89
+[0m02:19:35.195976 [debug] [Thread-2  ]: Writing injected SQL for node "model.airflow_dbt.fctSales"
+[0m02:19:35.197082 [debug] [Thread-1  ]: Finished running node test.airflow_dbt.unique_stg_productcategory_productcategoryid.40f41ade89
+[0m02:19:35.198099 [debug] [Thread-3  ]: Began executing node model.airflow_dbt.dimProduct
+[0m02:19:35.198986 [debug] [Thread-1  ]: Began running node model.airflow_dbt.dimSalesReason
+[0m02:19:35.199983 [debug] [Thread-2  ]: Began executing node model.airflow_dbt.fctSales
+[0m02:19:35.199983 [debug] [Thread-3  ]: Finished running node model.airflow_dbt.dimProduct
+[0m02:19:35.200982 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly test.airflow_dbt.unique_stg_productcategory_productcategoryid.40f41ade89, now model.airflow_dbt.dimSalesReason)
+[0m02:19:35.201980 [debug] [Thread-2  ]: Finished running node model.airflow_dbt.fctSales
+[0m02:19:35.201980 [debug] [Thread-3  ]: Began running node model.airflow_dbt.dimTerritory
+[0m02:19:35.202981 [debug] [Thread-1  ]: Began compiling node model.airflow_dbt.dimSalesReason
+[0m02:19:35.203981 [debug] [Thread-2  ]: Began running node model.airflow_dbt.dimOrderSpecialOffer
+[0m02:19:35.203981 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.dimProduct, now model.airflow_dbt.dimTerritory)
+[0m02:19:35.207475 [debug] [Thread-1  ]: Writing injected SQL for node "model.airflow_dbt.dimSalesReason"
+[0m02:19:35.208500 [debug] [Thread-2  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.fctSales, now model.airflow_dbt.dimOrderSpecialOffer)
+[0m02:19:35.208500 [debug] [Thread-3  ]: Began compiling node model.airflow_dbt.dimTerritory
+[0m02:19:35.209481 [debug] [Thread-2  ]: Began compiling node model.airflow_dbt.dimOrderSpecialOffer
+[0m02:19:35.210480 [debug] [Thread-1  ]: Began executing node model.airflow_dbt.dimSalesReason
+[0m02:19:35.213496 [debug] [Thread-3  ]: Writing injected SQL for node "model.airflow_dbt.dimTerritory"
+[0m02:19:35.217093 [debug] [Thread-2  ]: Writing injected SQL for node "model.airflow_dbt.dimOrderSpecialOffer"
+[0m02:19:35.217633 [debug] [Thread-1  ]: Finished running node model.airflow_dbt.dimSalesReason
+[0m02:19:35.218637 [debug] [Thread-3  ]: Began executing node model.airflow_dbt.dimTerritory
+[0m02:19:35.219640 [debug] [Thread-1  ]: Began running node model.airflow_dbt.dimCustomer
+[0m02:19:35.220638 [debug] [Thread-3  ]: Finished running node model.airflow_dbt.dimTerritory
+[0m02:19:35.220638 [debug] [Thread-2  ]: Began executing node model.airflow_dbt.dimOrderSpecialOffer
+[0m02:19:35.221638 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.dimSalesReason, now model.airflow_dbt.dimCustomer)
+[0m02:19:35.222638 [debug] [Thread-3  ]: Began running node test.airflow_dbt.relationships_stg_address_stateprovinceid__stateprovinceid__ref_stg_stateprovince_.6b71cf8ab0
+[0m02:19:35.222638 [debug] [Thread-2  ]: Finished running node model.airflow_dbt.dimOrderSpecialOffer
+[0m02:19:35.223638 [debug] [Thread-1  ]: Began compiling node model.airflow_dbt.dimCustomer
+[0m02:19:35.223638 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.dimTerritory, now test.airflow_dbt.relationships_stg_address_stateprovinceid__stateprovinceid__ref_stg_stateprovince_.6b71cf8ab0)
+[0m02:19:35.223638 [debug] [Thread-2  ]: Began running node test.airflow_dbt.not_null_dimProduct_product_key.795453a445
+[0m02:19:35.228500 [debug] [Thread-1  ]: Writing injected SQL for node "model.airflow_dbt.dimCustomer"
+[0m02:19:35.229515 [debug] [Thread-3  ]: Began compiling node test.airflow_dbt.relationships_stg_address_stateprovinceid__stateprovinceid__ref_stg_stateprovince_.6b71cf8ab0
+[0m02:19:35.230501 [debug] [Thread-2  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.dimOrderSpecialOffer, now test.airflow_dbt.not_null_dimProduct_product_key.795453a445)
+[0m02:19:35.237516 [debug] [Thread-3  ]: Writing injected SQL for node "test.airflow_dbt.relationships_stg_address_stateprovinceid__stateprovinceid__ref_stg_stateprovince_.6b71cf8ab0"
+[0m02:19:35.237516 [debug] [Thread-2  ]: Began compiling node test.airflow_dbt.not_null_dimProduct_product_key.795453a445
+[0m02:19:35.238516 [debug] [Thread-1  ]: Began executing node model.airflow_dbt.dimCustomer
+[0m02:19:35.242532 [debug] [Thread-2  ]: Writing injected SQL for node "test.airflow_dbt.not_null_dimProduct_product_key.795453a445"
+[0m02:19:35.242532 [debug] [Thread-3  ]: Began executing node test.airflow_dbt.relationships_stg_address_stateprovinceid__stateprovinceid__ref_stg_stateprovince_.6b71cf8ab0
+[0m02:19:35.243516 [debug] [Thread-1  ]: Finished running node model.airflow_dbt.dimCustomer
+[0m02:19:35.243516 [debug] [Thread-3  ]: Finished running node test.airflow_dbt.relationships_stg_address_stateprovinceid__stateprovinceid__ref_stg_stateprovince_.6b71cf8ab0
+[0m02:19:35.245020 [debug] [Thread-1  ]: Began running node test.airflow_dbt.unique_dimProduct_product_key.3429424d75
+[0m02:19:35.246024 [debug] [Thread-2  ]: Began executing node test.airflow_dbt.not_null_dimProduct_product_key.795453a445
+[0m02:19:35.246528 [debug] [Thread-3  ]: Began running node test.airflow_dbt.not_null_fctSales_sales_key.7104171205
+[0m02:19:35.246938 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.dimCustomer, now test.airflow_dbt.unique_dimProduct_product_key.3429424d75)
+[0m02:19:35.247593 [debug] [Thread-2  ]: Finished running node test.airflow_dbt.not_null_dimProduct_product_key.795453a445
+[0m02:19:35.248520 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly test.airflow_dbt.relationships_stg_address_stateprovinceid__stateprovinceid__ref_stg_stateprovince_.6b71cf8ab0, now test.airflow_dbt.not_null_fctSales_sales_key.7104171205)
+[0m02:19:35.248520 [debug] [Thread-1  ]: Began compiling node test.airflow_dbt.unique_dimProduct_product_key.3429424d75
+[0m02:19:35.249525 [debug] [Thread-2  ]: Began running node test.airflow_dbt.unique_fctSales_sales_key.3b0e1c2fd8
+[0m02:19:35.249525 [debug] [Thread-3  ]: Began compiling node test.airflow_dbt.not_null_fctSales_sales_key.7104171205
+[0m02:19:35.252541 [debug] [Thread-1  ]: Writing injected SQL for node "test.airflow_dbt.unique_dimProduct_product_key.3429424d75"
+[0m02:19:35.253541 [debug] [Thread-2  ]: Re-using an available connection from the pool (formerly test.airflow_dbt.not_null_dimProduct_product_key.795453a445, now test.airflow_dbt.unique_fctSales_sales_key.3b0e1c2fd8)
+[0m02:19:35.256647 [debug] [Thread-3  ]: Writing injected SQL for node "test.airflow_dbt.not_null_fctSales_sales_key.7104171205"
+[0m02:19:35.257650 [debug] [Thread-2  ]: Began compiling node test.airflow_dbt.unique_fctSales_sales_key.3b0e1c2fd8
+[0m02:19:35.257650 [debug] [Thread-1  ]: Began executing node test.airflow_dbt.unique_dimProduct_product_key.3429424d75
+[0m02:19:35.262651 [debug] [Thread-2  ]: Writing injected SQL for node "test.airflow_dbt.unique_fctSales_sales_key.3b0e1c2fd8"
+[0m02:19:35.262651 [debug] [Thread-3  ]: Began executing node test.airflow_dbt.not_null_fctSales_sales_key.7104171205
+[0m02:19:35.263693 [debug] [Thread-1  ]: Finished running node test.airflow_dbt.unique_dimProduct_product_key.3429424d75
+[0m02:19:35.265201 [debug] [Thread-3  ]: Finished running node test.airflow_dbt.not_null_fctSales_sales_key.7104171205
+[0m02:19:35.265201 [debug] [Thread-1  ]: Began running node test.airflow_dbt.not_null_dimTerritory_territory_key.042315bc71
+[0m02:19:35.266206 [debug] [Thread-2  ]: Began executing node test.airflow_dbt.unique_fctSales_sales_key.3b0e1c2fd8
+[0m02:19:35.266206 [debug] [Thread-3  ]: Began running node test.airflow_dbt.unique_dimTerritory_territory_key.9a24ec39da
+[0m02:19:35.267277 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly test.airflow_dbt.unique_dimProduct_product_key.3429424d75, now test.airflow_dbt.not_null_dimTerritory_territory_key.042315bc71)
+[0m02:19:35.267277 [debug] [Thread-2  ]: Finished running node test.airflow_dbt.unique_fctSales_sales_key.3b0e1c2fd8
+[0m02:19:35.268203 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly test.airflow_dbt.not_null_fctSales_sales_key.7104171205, now test.airflow_dbt.unique_dimTerritory_territory_key.9a24ec39da)
+[0m02:19:35.269099 [debug] [Thread-1  ]: Began compiling node test.airflow_dbt.not_null_dimTerritory_territory_key.042315bc71
+[0m02:19:35.269099 [debug] [Thread-2  ]: Began running node test.airflow_dbt.not_null_dimCustomer_customer_key.809567d2c6
+[0m02:19:35.269099 [debug] [Thread-3  ]: Began compiling node test.airflow_dbt.unique_dimTerritory_territory_key.9a24ec39da
+[0m02:19:35.323528 [debug] [Thread-1  ]: Writing injected SQL for node "test.airflow_dbt.not_null_dimTerritory_territory_key.042315bc71"
+[0m02:19:35.325033 [debug] [Thread-2  ]: Re-using an available connection from the pool (formerly test.airflow_dbt.unique_fctSales_sales_key.3b0e1c2fd8, now test.airflow_dbt.not_null_dimCustomer_customer_key.809567d2c6)
+[0m02:19:35.328086 [debug] [Thread-3  ]: Writing injected SQL for node "test.airflow_dbt.unique_dimTerritory_territory_key.9a24ec39da"
+[0m02:19:35.329188 [debug] [Thread-1  ]: Began executing node test.airflow_dbt.not_null_dimTerritory_territory_key.042315bc71
+[0m02:19:35.330094 [debug] [Thread-2  ]: Began compiling node test.airflow_dbt.not_null_dimCustomer_customer_key.809567d2c6
+[0m02:19:35.331093 [debug] [Thread-1  ]: Finished running node test.airflow_dbt.not_null_dimTerritory_territory_key.042315bc71
+[0m02:19:35.331093 [debug] [Thread-3  ]: Began executing node test.airflow_dbt.unique_dimTerritory_territory_key.9a24ec39da
+[0m02:19:35.335091 [debug] [Thread-2  ]: Writing injected SQL for node "test.airflow_dbt.not_null_dimCustomer_customer_key.809567d2c6"
+[0m02:19:35.335638 [debug] [Thread-1  ]: Began running node test.airflow_dbt.unique_dimCustomer_customer_key.a6efdbf53e
+[0m02:19:35.336143 [debug] [Thread-3  ]: Finished running node test.airflow_dbt.unique_dimTerritory_territory_key.9a24ec39da
+[0m02:19:35.337116 [debug] [Thread-2  ]: Began executing node test.airflow_dbt.not_null_dimCustomer_customer_key.809567d2c6
+[0m02:19:35.337116 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly test.airflow_dbt.not_null_dimTerritory_territory_key.042315bc71, now test.airflow_dbt.unique_dimCustomer_customer_key.a6efdbf53e)
+[0m02:19:35.339149 [debug] [Thread-2  ]: Finished running node test.airflow_dbt.not_null_dimCustomer_customer_key.809567d2c6
+[0m02:19:35.339149 [debug] [Thread-1  ]: Began compiling node test.airflow_dbt.unique_dimCustomer_customer_key.a6efdbf53e
+[0m02:19:35.343149 [debug] [Thread-1  ]: Writing injected SQL for node "test.airflow_dbt.unique_dimCustomer_customer_key.a6efdbf53e"
+[0m02:19:35.344149 [debug] [Thread-1  ]: Began executing node test.airflow_dbt.unique_dimCustomer_customer_key.a6efdbf53e
+[0m02:19:35.344149 [debug] [Thread-1  ]: Finished running node test.airflow_dbt.unique_dimCustomer_customer_key.a6efdbf53e
+[0m02:19:36.202684 [debug] [Thread-4  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:7b82444c-ec7a-4b80-9aa5-69f626748769&page=queryresults
+[0m02:19:37.875093 [debug] [Thread-4  ]: Writing injected SQL for node "model.airflow_dbt.stg_date"
+[0m02:19:37.876117 [debug] [Thread-4  ]: Began executing node model.airflow_dbt.stg_date
+[0m02:19:37.877121 [debug] [Thread-4  ]: Finished running node model.airflow_dbt.stg_date
+[0m02:19:37.878121 [debug] [Thread-3  ]: Began running node model.airflow_dbt.dimDate
+[0m02:19:37.879121 [debug] [Thread-3  ]: Re-using an available connection from the pool (formerly test.airflow_dbt.unique_dimTerritory_territory_key.9a24ec39da, now model.airflow_dbt.dimDate)
+[0m02:19:37.879121 [debug] [Thread-3  ]: Began compiling node model.airflow_dbt.dimDate
+[0m02:19:37.883627 [debug] [Thread-3  ]: Opening a new connection, currently in state closed
+[0m02:19:37.885130 [debug] [Thread-3  ]: On model.airflow_dbt.dimDate: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "node_id": "model.airflow_dbt.dimDate"} */
+
+
+        select 
+
+    datetime_diff(
+        cast(cast('2014-12-31' as datetime ) as datetime),
+        cast(cast('2011-01-01' as datetime ) as datetime),
+        day
+    )
+
+  
+[0m02:19:39.075087 [debug] [Thread-3  ]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:fdddfae9-04f9-460f-a765-7e03748bf3a8&page=queryresults
+[0m02:19:40.311306 [debug] [Thread-3  ]: Writing injected SQL for node "model.airflow_dbt.dimDate"
+[0m02:19:40.312287 [debug] [Thread-3  ]: Began executing node model.airflow_dbt.dimDate
+[0m02:19:40.313286 [debug] [Thread-3  ]: Finished running node model.airflow_dbt.dimDate
+[0m02:19:40.314285 [debug] [Thread-1  ]: Began running node test.airflow_dbt.not_null_dimDate_date_key.7f3f1b9224
+[0m02:19:40.315285 [debug] [Thread-1  ]: Re-using an available connection from the pool (formerly test.airflow_dbt.unique_dimCustomer_customer_key.a6efdbf53e, now test.airflow_dbt.not_null_dimDate_date_key.7f3f1b9224)
+[0m02:19:40.315285 [debug] [Thread-4  ]: Began running node test.airflow_dbt.unique_dimDate_date_key.d6fbddac20
+[0m02:19:40.315788 [debug] [Thread-1  ]: Began compiling node test.airflow_dbt.not_null_dimDate_date_key.7f3f1b9224
+[0m02:19:40.316794 [debug] [Thread-4  ]: Re-using an available connection from the pool (formerly model.airflow_dbt.stg_date, now test.airflow_dbt.unique_dimDate_date_key.d6fbddac20)
+[0m02:19:40.320814 [debug] [Thread-1  ]: Writing injected SQL for node "test.airflow_dbt.not_null_dimDate_date_key.7f3f1b9224"
+[0m02:19:40.320814 [debug] [Thread-4  ]: Began compiling node test.airflow_dbt.unique_dimDate_date_key.d6fbddac20
+[0m02:19:40.325881 [debug] [Thread-4  ]: Writing injected SQL for node "test.airflow_dbt.unique_dimDate_date_key.d6fbddac20"
+[0m02:19:40.327038 [debug] [Thread-1  ]: Began executing node test.airflow_dbt.not_null_dimDate_date_key.7f3f1b9224
+[0m02:19:40.327895 [debug] [Thread-1  ]: Finished running node test.airflow_dbt.not_null_dimDate_date_key.7f3f1b9224
+[0m02:19:40.327895 [debug] [Thread-4  ]: Began executing node test.airflow_dbt.unique_dimDate_date_key.d6fbddac20
+[0m02:19:40.328912 [debug] [Thread-4  ]: Finished running node test.airflow_dbt.unique_dimDate_date_key.d6fbddac20
+[0m02:19:40.330897 [debug] [MainThread]: Connection 'master' was properly closed.
+[0m02:19:40.330897 [debug] [MainThread]: Connection 'list_elt-project-427017_sales_db_mart' was properly closed.
+[0m02:19:40.330897 [debug] [MainThread]: Connection 'list_elt-project-427017_sales_db_staging' was properly closed.
+[0m02:19:40.331911 [debug] [MainThread]: Connection 'test.airflow_dbt.not_null_dimDate_date_key.7f3f1b9224' was properly closed.
+[0m02:19:40.331911 [debug] [MainThread]: Connection 'test.airflow_dbt.not_null_dimCustomer_customer_key.809567d2c6' was properly closed.
+[0m02:19:40.331911 [debug] [MainThread]: Connection 'model.airflow_dbt.dimDate' was properly closed.
+[0m02:19:40.332912 [debug] [MainThread]: Connection 'test.airflow_dbt.unique_dimDate_date_key.d6fbddac20' was properly closed.
+[0m02:19:40.336985 [debug] [MainThread]: Command end result
+[0m02:19:40.762224 [debug] [MainThread]: Acquiring new bigquery connection 'generate_catalog'
+[0m02:19:40.763244 [info ] [MainThread]: Building catalog
+[0m02:19:40.771695 [debug] [ThreadPool]: Acquiring new bigquery connection 'elt-project-427017.information_schema'
+[0m02:19:40.772695 [debug] [ThreadPool]: Acquiring new bigquery connection 'elt-project-427017.information_schema'
+[0m02:19:40.785826 [debug] [ThreadPool]: Opening a new connection, currently in state init
+[0m02:19:40.785826 [debug] [ThreadPool]: Acquiring new bigquery connection 'elt-project-427017.information_schema'
+[0m02:19:40.789983 [debug] [ThreadPool]: Opening a new connection, currently in state init
+[0m02:19:40.791982 [debug] [ThreadPool]: On elt-project-427017.information_schema: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "connection_name": "elt-project-427017.information_schema"} */
+
+    with
+                table_shards_stage as (
+    select
+        tables.project_id as table_catalog,
+        tables.dataset_id as table_schema,
+        coalesce(REGEXP_EXTRACT(tables.table_id, '^(.+)[0-9]{8}$'), tables.table_id) as table_name,
+        tables.table_id as shard_name,
+        REGEXP_EXTRACT(tables.table_id, '^.+([0-9]{8})$') as shard_index,
+        REGEXP_CONTAINS(tables.table_id, '^.+[0-9]{8}$') and tables.type = 1 as is_date_shard,
+        case
+            when materialized_views.table_name is not null then 'materialized view'
+            when tables.type = 1 then 'table'
+            when tables.type = 2 then 'view'
+            else 'external'
+        end as table_type,
+        tables.type = 1 as is_table,
+        JSON_VALUE(table_description.option_value) as table_comment,
+        tables.size_bytes,
+        tables.row_count
+    from `elt-project-427017`.`sales_db_staging`.__TABLES__ tables
+    left join `elt-project-427017`.`sales_db_staging`.INFORMATION_SCHEMA.MATERIALIZED_VIEWS materialized_views
+        on materialized_views.table_catalog = tables.project_id
+        and materialized_views.table_schema = tables.dataset_id
+        and materialized_views.table_name = tables.table_id
+    left join `elt-project-427017`.`sales_db_staging`.INFORMATION_SCHEMA.TABLE_OPTIONS table_description
+        on table_description.table_catalog = tables.project_id
+        and table_description.table_schema = tables.dataset_id
+        and table_description.table_name = tables.table_id
+        and table_description.option_name = 'description'
+),
+                table_shards as (
+                    select * from table_shards_stage
+                    where ((
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_productsubcategory')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_address')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_countryregion')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_productcategory')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_businessentityaddress')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_customer')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_salesorderheadersalesreason')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_specialoffer')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_person')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_salesorderdetail')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_salesterritory')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_product')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_salesorderheader')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_salesreason')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_stateprovince')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_staging')
+                            and upper(table_name) = upper('stg_date')
+                            ))
+                ),
+                tables as (
+    select distinct
+        table_catalog,
+        table_schema,
+        table_name,
+        is_date_shard,
+        table_type,
+        is_table,
+        table_comment
+    from table_shards
+),
+                table_stats as (
+    select
+        table_catalog,
+        table_schema,
+        table_name,
+        max(shard_name) as latest_shard_name,
+        min(shard_index) as shard_min,
+        max(shard_index) as shard_max,
+        count(shard_index) as shard_count,
+        sum(size_bytes) as size_bytes,
+        sum(row_count) as row_count
+    from table_shards
+    group by 1, 2, 3
+),
+
+                columns as (
+    select
+        columns.table_catalog,
+        columns.table_schema,
+        columns.table_name as shard_name,
+        coalesce(paths.field_path, '<unknown>') as column_name,
+        -- invent a row number to account for nested fields
+        -- BQ does not treat these nested properties as independent fields
+        row_number() over (
+            partition by
+                columns.table_catalog,
+                columns.table_schema,
+                columns.table_name
+            order by
+                columns.ordinal_position,
+                paths.field_path
+        ) as column_index,
+        coalesce(paths.data_type, '<unknown>') as column_type,
+        paths.description as column_comment,
+        case when columns.is_partitioning_column = 'YES' then 1 else 0 end as is_partitioning_column,
+        case when columns.is_partitioning_column = 'YES' then paths.field_path end as partition_column,
+        case when columns.clustering_ordinal_position is not null then 1 else 0 end as is_clustering_column,
+        case when columns.clustering_ordinal_position is not null then paths.field_path end as cluster_column,
+        columns.clustering_ordinal_position
+    from `elt-project-427017`.`sales_db_staging`.INFORMATION_SCHEMA.COLUMNS columns
+    join `elt-project-427017`.`sales_db_staging`.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS paths
+        on paths.table_catalog = columns.table_catalog
+        and paths.table_schema = columns.table_schema
+        and paths.table_name = columns.table_name
+        and paths.column_name = columns.column_name
+    where columns.ordinal_position is not null
+),
+                column_stats as (
+    select
+        table_catalog,
+        table_schema,
+        shard_name,
+        max(is_partitioning_column) = 1 as is_partitioned,
+        max(partition_column) as partition_column,
+        max(is_clustering_column) = 1 as is_clustered,
+        array_to_string(
+            array_agg(
+                cluster_column ignore nulls
+                order by clustering_ordinal_position
+            ), ', '
+        ) as clustering_columns
+    from columns
+    group by 1, 2, 3
+)
+
+            
+    select
+        tables.table_catalog as table_database,
+        tables.table_schema,
+        case
+            when tables.is_date_shard then concat(tables.table_name, '*')
+            else tables.table_name
+        end as table_name,
+        tables.table_type,
+        tables.table_comment,
+        -- coalesce column metadata fields to ensure they are non-null for catalog generation
+        -- external table columns are not present in COLUMN_FIELD_PATHS
+        coalesce(columns.column_name, '<unknown>') as column_name,
+        coalesce(columns.column_index, 1) as column_index,
+        coalesce(columns.column_type, '<unknown>') as column_type,
+        coalesce(columns.column_comment, '') as column_comment,
+
+        'Shard count' as `stats__date_shards__label`,
+        table_stats.shard_count as `stats__date_shards__value`,
+        'The number of date shards in this table' as `stats__date_shards__description`,
+        tables.is_date_shard as `stats__date_shards__include`,
+
+        'Shard (min)' as `stats__date_shard_min__label`,
+        table_stats.shard_min as `stats__date_shard_min__value`,
+        'The first date shard in this table' as `stats__date_shard_min__description`,
+        tables.is_date_shard as `stats__date_shard_min__include`,
+
+        'Shard (max)' as `stats__date_shard_max__label`,
+        table_stats.shard_max as `stats__date_shard_max__value`,
+        'The last date shard in this table' as `stats__date_shard_max__description`,
+        tables.is_date_shard as `stats__date_shard_max__include`,
+
+        '# Rows' as `stats__num_rows__label`,
+        table_stats.row_count as `stats__num_rows__value`,
+        'Approximate count of rows in this table' as `stats__num_rows__description`,
+        tables.is_table as `stats__num_rows__include`,
+
+        'Approximate Size' as `stats__num_bytes__label`,
+        table_stats.size_bytes as `stats__num_bytes__value`,
+        'Approximate size of table as reported by BigQuery' as `stats__num_bytes__description`,
+        tables.is_table as `stats__num_bytes__include`,
+
+        'Partitioned By' as `stats__partitioning_type__label`,
+        column_stats.partition_column as `stats__partitioning_type__value`,
+        'The partitioning column for this table' as `stats__partitioning_type__description`,
+        column_stats.is_partitioned as `stats__partitioning_type__include`,
+
+        'Clustered By' as `stats__clustering_fields__label`,
+        column_stats.clustering_columns as `stats__clustering_fields__value`,
+        'The clustering columns for this table' as `stats__clustering_fields__description`,
+        column_stats.is_clustered as `stats__clustering_fields__include`
+
+    from tables
+    join table_stats
+        on table_stats.table_catalog = tables.table_catalog
+        and table_stats.table_schema = tables.table_schema
+        and table_stats.table_name = tables.table_name
+    left join column_stats
+        on column_stats.table_catalog = tables.table_catalog
+        and column_stats.table_schema = tables.table_schema
+        and column_stats.shard_name = table_stats.latest_shard_name
+    left join columns
+        on columns.table_catalog = tables.table_catalog
+        and columns.table_schema = tables.table_schema
+        and columns.shard_name = table_stats.latest_shard_name
+
+  
+[0m02:19:40.796212 [debug] [ThreadPool]: Opening a new connection, currently in state init
+[0m02:19:40.798205 [debug] [ThreadPool]: On elt-project-427017.information_schema: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "connection_name": "elt-project-427017.information_schema"} */
+
+    with
+                table_shards_stage as (
+    select
+        tables.project_id as table_catalog,
+        tables.dataset_id as table_schema,
+        coalesce(REGEXP_EXTRACT(tables.table_id, '^(.+)[0-9]{8}$'), tables.table_id) as table_name,
+        tables.table_id as shard_name,
+        REGEXP_EXTRACT(tables.table_id, '^.+([0-9]{8})$') as shard_index,
+        REGEXP_CONTAINS(tables.table_id, '^.+[0-9]{8}$') and tables.type = 1 as is_date_shard,
+        case
+            when materialized_views.table_name is not null then 'materialized view'
+            when tables.type = 1 then 'table'
+            when tables.type = 2 then 'view'
+            else 'external'
+        end as table_type,
+        tables.type = 1 as is_table,
+        JSON_VALUE(table_description.option_value) as table_comment,
+        tables.size_bytes,
+        tables.row_count
+    from `elt-project-427017`.`sales_db_mart`.__TABLES__ tables
+    left join `elt-project-427017`.`sales_db_mart`.INFORMATION_SCHEMA.MATERIALIZED_VIEWS materialized_views
+        on materialized_views.table_catalog = tables.project_id
+        and materialized_views.table_schema = tables.dataset_id
+        and materialized_views.table_name = tables.table_id
+    left join `elt-project-427017`.`sales_db_mart`.INFORMATION_SCHEMA.TABLE_OPTIONS table_description
+        on table_description.table_catalog = tables.project_id
+        and table_description.table_schema = tables.dataset_id
+        and table_description.table_name = tables.table_id
+        and table_description.option_name = 'description'
+),
+                table_shards as (
+                    select * from table_shards_stage
+                    where ((
+                                upper(table_schema) = upper('sales_db_mart')
+                            and upper(table_name) = upper('fctSales')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_mart')
+                            and upper(table_name) = upper('dimSalesReason')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_mart')
+                            and upper(table_name) = upper('dimProduct')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_mart')
+                            and upper(table_name) = upper('dimCustomer')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_mart')
+                            and upper(table_name) = upper('dimDate')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_mart')
+                            and upper(table_name) = upper('dimTerritory')
+                            ) or (
+                                upper(table_schema) = upper('sales_db_mart')
+                            and upper(table_name) = upper('dimOrderSpecialOffer')
+                            ))
+                ),
+                tables as (
+    select distinct
+        table_catalog,
+        table_schema,
+        table_name,
+        is_date_shard,
+        table_type,
+        is_table,
+        table_comment
+    from table_shards
+),
+                table_stats as (
+    select
+        table_catalog,
+        table_schema,
+        table_name,
+        max(shard_name) as latest_shard_name,
+        min(shard_index) as shard_min,
+        max(shard_index) as shard_max,
+        count(shard_index) as shard_count,
+        sum(size_bytes) as size_bytes,
+        sum(row_count) as row_count
+    from table_shards
+    group by 1, 2, 3
+),
+
+                columns as (
+    select
+        columns.table_catalog,
+        columns.table_schema,
+        columns.table_name as shard_name,
+        coalesce(paths.field_path, '<unknown>') as column_name,
+        -- invent a row number to account for nested fields
+        -- BQ does not treat these nested properties as independent fields
+        row_number() over (
+            partition by
+                columns.table_catalog,
+                columns.table_schema,
+                columns.table_name
+            order by
+                columns.ordinal_position,
+                paths.field_path
+        ) as column_index,
+        coalesce(paths.data_type, '<unknown>') as column_type,
+        paths.description as column_comment,
+        case when columns.is_partitioning_column = 'YES' then 1 else 0 end as is_partitioning_column,
+        case when columns.is_partitioning_column = 'YES' then paths.field_path end as partition_column,
+        case when columns.clustering_ordinal_position is not null then 1 else 0 end as is_clustering_column,
+        case when columns.clustering_ordinal_position is not null then paths.field_path end as cluster_column,
+        columns.clustering_ordinal_position
+    from `elt-project-427017`.`sales_db_mart`.INFORMATION_SCHEMA.COLUMNS columns
+    join `elt-project-427017`.`sales_db_mart`.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS paths
+        on paths.table_catalog = columns.table_catalog
+        and paths.table_schema = columns.table_schema
+        and paths.table_name = columns.table_name
+        and paths.column_name = columns.column_name
+    where columns.ordinal_position is not null
+),
+                column_stats as (
+    select
+        table_catalog,
+        table_schema,
+        shard_name,
+        max(is_partitioning_column) = 1 as is_partitioned,
+        max(partition_column) as partition_column,
+        max(is_clustering_column) = 1 as is_clustered,
+        array_to_string(
+            array_agg(
+                cluster_column ignore nulls
+                order by clustering_ordinal_position
+            ), ', '
+        ) as clustering_columns
+    from columns
+    group by 1, 2, 3
+)
+
+            
+    select
+        tables.table_catalog as table_database,
+        tables.table_schema,
+        case
+            when tables.is_date_shard then concat(tables.table_name, '*')
+            else tables.table_name
+        end as table_name,
+        tables.table_type,
+        tables.table_comment,
+        -- coalesce column metadata fields to ensure they are non-null for catalog generation
+        -- external table columns are not present in COLUMN_FIELD_PATHS
+        coalesce(columns.column_name, '<unknown>') as column_name,
+        coalesce(columns.column_index, 1) as column_index,
+        coalesce(columns.column_type, '<unknown>') as column_type,
+        coalesce(columns.column_comment, '') as column_comment,
+
+        'Shard count' as `stats__date_shards__label`,
+        table_stats.shard_count as `stats__date_shards__value`,
+        'The number of date shards in this table' as `stats__date_shards__description`,
+        tables.is_date_shard as `stats__date_shards__include`,
+
+        'Shard (min)' as `stats__date_shard_min__label`,
+        table_stats.shard_min as `stats__date_shard_min__value`,
+        'The first date shard in this table' as `stats__date_shard_min__description`,
+        tables.is_date_shard as `stats__date_shard_min__include`,
+
+        'Shard (max)' as `stats__date_shard_max__label`,
+        table_stats.shard_max as `stats__date_shard_max__value`,
+        'The last date shard in this table' as `stats__date_shard_max__description`,
+        tables.is_date_shard as `stats__date_shard_max__include`,
+
+        '# Rows' as `stats__num_rows__label`,
+        table_stats.row_count as `stats__num_rows__value`,
+        'Approximate count of rows in this table' as `stats__num_rows__description`,
+        tables.is_table as `stats__num_rows__include`,
+
+        'Approximate Size' as `stats__num_bytes__label`,
+        table_stats.size_bytes as `stats__num_bytes__value`,
+        'Approximate size of table as reported by BigQuery' as `stats__num_bytes__description`,
+        tables.is_table as `stats__num_bytes__include`,
+
+        'Partitioned By' as `stats__partitioning_type__label`,
+        column_stats.partition_column as `stats__partitioning_type__value`,
+        'The partitioning column for this table' as `stats__partitioning_type__description`,
+        column_stats.is_partitioned as `stats__partitioning_type__include`,
+
+        'Clustered By' as `stats__clustering_fields__label`,
+        column_stats.clustering_columns as `stats__clustering_fields__value`,
+        'The clustering columns for this table' as `stats__clustering_fields__description`,
+        column_stats.is_clustered as `stats__clustering_fields__include`
+
+    from tables
+    join table_stats
+        on table_stats.table_catalog = tables.table_catalog
+        and table_stats.table_schema = tables.table_schema
+        and table_stats.table_name = tables.table_name
+    left join column_stats
+        on column_stats.table_catalog = tables.table_catalog
+        and column_stats.table_schema = tables.table_schema
+        and column_stats.shard_name = table_stats.latest_shard_name
+    left join columns
+        on columns.table_catalog = tables.table_catalog
+        and columns.table_schema = tables.table_schema
+        and columns.shard_name = table_stats.latest_shard_name
+
+  
+[0m02:19:40.850918 [debug] [ThreadPool]: On elt-project-427017.information_schema: /* {"app": "dbt", "dbt_version": "1.8.3", "profile_name": "dbt_bigquery", "target_name": "dev", "connection_name": "elt-project-427017.information_schema"} */
+
+    with
+                table_shards_stage as (
+    select
+        tables.project_id as table_catalog,
+        tables.dataset_id as table_schema,
+        coalesce(REGEXP_EXTRACT(tables.table_id, '^(.+)[0-9]{8}$'), tables.table_id) as table_name,
+        tables.table_id as shard_name,
+        REGEXP_EXTRACT(tables.table_id, '^.+([0-9]{8})$') as shard_index,
+        REGEXP_CONTAINS(tables.table_id, '^.+[0-9]{8}$') and tables.type = 1 as is_date_shard,
+        case
+            when materialized_views.table_name is not null then 'materialized view'
+            when tables.type = 1 then 'table'
+            when tables.type = 2 then 'view'
+            else 'external'
+        end as table_type,
+        tables.type = 1 as is_table,
+        JSON_VALUE(table_description.option_value) as table_comment,
+        tables.size_bytes,
+        tables.row_count
+    from `elt-project-427017`.`sales_db`.__TABLES__ tables
+    left join `elt-project-427017`.`sales_db`.INFORMATION_SCHEMA.MATERIALIZED_VIEWS materialized_views
+        on materialized_views.table_catalog = tables.project_id
+        and materialized_views.table_schema = tables.dataset_id
+        and materialized_views.table_name = tables.table_id
+    left join `elt-project-427017`.`sales_db`.INFORMATION_SCHEMA.TABLE_OPTIONS table_description
+        on table_description.table_catalog = tables.project_id
+        and table_description.table_schema = tables.dataset_id
+        and table_description.table_name = tables.table_id
+        and table_description.option_name = 'description'
+),
+                table_shards as (
+                    select * from table_shards_stage
+                    where ((
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('person')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('productsubcategory')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('stateprovince')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('salesorderdetail')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('product')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('businessentityaddress')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('salesreason')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('productcategory')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('salesterritory')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('salesorderheadersalesreason')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('salesorderheader')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('countryregion')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('specialoffer')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('address')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('store')
+                            ) or (
+                                upper(table_schema) = upper('sales_db')
+                            and upper(table_name) = upper('customer')
+                            ))
+                ),
+                tables as (
+    select distinct
+        table_catalog,
+        table_schema,
+        table_name,
+        is_date_shard,
+        table_type,
+        is_table,
+        table_comment
+    from table_shards
+),
+                table_stats as (
+    select
+        table_catalog,
+        table_schema,
+        table_name,
+        max(shard_name) as latest_shard_name,
+        min(shard_index) as shard_min,
+        max(shard_index) as shard_max,
+        count(shard_index) as shard_count,
+        sum(size_bytes) as size_bytes,
+        sum(row_count) as row_count
+    from table_shards
+    group by 1, 2, 3
+),
+
+                columns as (
+    select
+        columns.table_catalog,
+        columns.table_schema,
+        columns.table_name as shard_name,
+        coalesce(paths.field_path, '<unknown>') as column_name,
+        -- invent a row number to account for nested fields
+        -- BQ does not treat these nested properties as independent fields
+        row_number() over (
+            partition by
+                columns.table_catalog,
+                columns.table_schema,
+                columns.table_name
+            order by
+                columns.ordinal_position,
+                paths.field_path
+        ) as column_index,
+        coalesce(paths.data_type, '<unknown>') as column_type,
+        paths.description as column_comment,
+        case when columns.is_partitioning_column = 'YES' then 1 else 0 end as is_partitioning_column,
+        case when columns.is_partitioning_column = 'YES' then paths.field_path end as partition_column,
+        case when columns.clustering_ordinal_position is not null then 1 else 0 end as is_clustering_column,
+        case when columns.clustering_ordinal_position is not null then paths.field_path end as cluster_column,
+        columns.clustering_ordinal_position
+    from `elt-project-427017`.`sales_db`.INFORMATION_SCHEMA.COLUMNS columns
+    join `elt-project-427017`.`sales_db`.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS paths
+        on paths.table_catalog = columns.table_catalog
+        and paths.table_schema = columns.table_schema
+        and paths.table_name = columns.table_name
+        and paths.column_name = columns.column_name
+    where columns.ordinal_position is not null
+),
+                column_stats as (
+    select
+        table_catalog,
+        table_schema,
+        shard_name,
+        max(is_partitioning_column) = 1 as is_partitioned,
+        max(partition_column) as partition_column,
+        max(is_clustering_column) = 1 as is_clustered,
+        array_to_string(
+            array_agg(
+                cluster_column ignore nulls
+                order by clustering_ordinal_position
+            ), ', '
+        ) as clustering_columns
+    from columns
+    group by 1, 2, 3
+)
+
+            
+    select
+        tables.table_catalog as table_database,
+        tables.table_schema,
+        case
+            when tables.is_date_shard then concat(tables.table_name, '*')
+            else tables.table_name
+        end as table_name,
+        tables.table_type,
+        tables.table_comment,
+        -- coalesce column metadata fields to ensure they are non-null for catalog generation
+        -- external table columns are not present in COLUMN_FIELD_PATHS
+        coalesce(columns.column_name, '<unknown>') as column_name,
+        coalesce(columns.column_index, 1) as column_index,
+        coalesce(columns.column_type, '<unknown>') as column_type,
+        coalesce(columns.column_comment, '') as column_comment,
+
+        'Shard count' as `stats__date_shards__label`,
+        table_stats.shard_count as `stats__date_shards__value`,
+        'The number of date shards in this table' as `stats__date_shards__description`,
+        tables.is_date_shard as `stats__date_shards__include`,
+
+        'Shard (min)' as `stats__date_shard_min__label`,
+        table_stats.shard_min as `stats__date_shard_min__value`,
+        'The first date shard in this table' as `stats__date_shard_min__description`,
+        tables.is_date_shard as `stats__date_shard_min__include`,
+
+        'Shard (max)' as `stats__date_shard_max__label`,
+        table_stats.shard_max as `stats__date_shard_max__value`,
+        'The last date shard in this table' as `stats__date_shard_max__description`,
+        tables.is_date_shard as `stats__date_shard_max__include`,
+
+        '# Rows' as `stats__num_rows__label`,
+        table_stats.row_count as `stats__num_rows__value`,
+        'Approximate count of rows in this table' as `stats__num_rows__description`,
+        tables.is_table as `stats__num_rows__include`,
+
+        'Approximate Size' as `stats__num_bytes__label`,
+        table_stats.size_bytes as `stats__num_bytes__value`,
+        'Approximate size of table as reported by BigQuery' as `stats__num_bytes__description`,
+        tables.is_table as `stats__num_bytes__include`,
+
+        'Partitioned By' as `stats__partitioning_type__label`,
+        column_stats.partition_column as `stats__partitioning_type__value`,
+        'The partitioning column for this table' as `stats__partitioning_type__description`,
+        column_stats.is_partitioned as `stats__partitioning_type__include`,
+
+        'Clustered By' as `stats__clustering_fields__label`,
+        column_stats.clustering_columns as `stats__clustering_fields__value`,
+        'The clustering columns for this table' as `stats__clustering_fields__description`,
+        column_stats.is_clustered as `stats__clustering_fields__include`
+
+    from tables
+    join table_stats
+        on table_stats.table_catalog = tables.table_catalog
+        and table_stats.table_schema = tables.table_schema
+        and table_stats.table_name = tables.table_name
+    left join column_stats
+        on column_stats.table_catalog = tables.table_catalog
+        and column_stats.table_schema = tables.table_schema
+        and column_stats.shard_name = table_stats.latest_shard_name
+    left join columns
+        on columns.table_catalog = tables.table_catalog
+        and columns.table_schema = tables.table_schema
+        and columns.shard_name = table_stats.latest_shard_name
+
+  
+[0m02:19:41.884088 [debug] [ThreadPool]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:01fc9ae1-b51a-43dc-b621-0f09261b9b74&page=queryresults
+[0m02:19:41.887756 [debug] [ThreadPool]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:387160ba-b453-4693-95bc-3232beed304e&page=queryresults
+[0m02:19:42.029867 [debug] [ThreadPool]: BigQuery adapter: https://console.cloud.google.com/bigquery?project=elt-project-427017&j=bq:US:5cc129e8-183e-4c0d-8f3f-733ca74544b9&page=queryresults
+[0m02:19:45.662531 [info ] [MainThread]: Catalog written to C:\Users\destr\dbt_learn\airflow_dbt\target\catalog.json
+[0m02:19:45.665072 [debug] [MainThread]: Command `dbt docs generate` succeeded at 02:19:45.663470 after 12.82 seconds
+[0m02:19:45.665072 [debug] [MainThread]: Connection 'generate_catalog' was properly closed.
+[0m02:19:45.665072 [debug] [MainThread]: Connection 'elt-project-427017.information_schema' was properly closed.
+[0m02:19:45.666173 [debug] [MainThread]: Connection 'elt-project-427017.information_schema' was properly closed.
+[0m02:19:45.666678 [debug] [MainThread]: Connection 'elt-project-427017.information_schema' was properly closed.
+[0m02:19:45.667164 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'end', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000156D77AFD00>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000156DDEF8070>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000156DA2FFF70>]}
+[0m02:19:45.667739 [debug] [MainThread]: Flushing usage events
+[0m02:19:55.088450 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'start', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000001C3A957FD00>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000001C3AC1169D0>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000001C3AC1167C0>]}
+
+
+============================== 02:19:55.092488 | 308a0f1a-daa4-4c0c-b0d9-f1e1905665e5 ==============================
+[0m02:19:55.092488 [info ] [MainThread]: Running with dbt=1.8.3
+[0m02:19:55.093490 [debug] [MainThread]: running dbt with arguments {'printer_width': '80', 'indirect_selection': 'eager', 'write_json': 'True', 'log_cache_events': 'False', 'partial_parse': 'True', 'cache_selected_only': 'False', 'profiles_dir': 'C:\\Users\\destr\\dbt_learn\\airflow_dbt', 'debug': 'False', 'version_check': 'True', 'log_path': 'C:\\Users\\destr\\dbt_learn\\airflow_dbt\\logs', 'fail_fast': 'False', 'warn_error': 'None', 'use_colors': 'True', 'use_experimental_parser': 'False', 'no_print': 'None', 'quiet': 'False', 'empty': 'None', 'warn_error_options': 'WarnErrorOptions(include=[], exclude=[])', 'introspect': 'True', 'invocation_command': 'dbt docs serve', 'static_parser': 'True', 'target_path': 'None', 'log_format': 'default', 'send_anonymous_usage_stats': 'True'}
+[0m02:19:55.915562 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'project_id', 'label': '308a0f1a-daa4-4c0c-b0d9-f1e1905665e5', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000001C3AF5653D0>]}
+[0m02:19:55.957351 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'adapter_info', 'label': '308a0f1a-daa4-4c0c-b0d9-f1e1905665e5', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000001C3ABF92A30>]}
+[0m02:29:35.157526 [error] [MainThread]: Encountered an error:
+
+[0m02:29:35.161593 [error] [MainThread]: Traceback (most recent call last):
+  File "C:\Users\destr\dbt_learn\env\lib\site-packages\dbt\cli\requires.py", line 138, in wrapper
+    result, success = func(*args, **kwargs)
+  File "C:\Users\destr\dbt_learn\env\lib\site-packages\dbt\cli\requires.py", line 101, in wrapper
+    return func(*args, **kwargs)
+  File "C:\Users\destr\dbt_learn\env\lib\site-packages\dbt\cli\requires.py", line 218, in wrapper
+    return func(*args, **kwargs)
+  File "C:\Users\destr\dbt_learn\env\lib\site-packages\dbt\cli\requires.py", line 247, in wrapper
+    return func(*args, **kwargs)
+  File "C:\Users\destr\dbt_learn\env\lib\site-packages\dbt\cli\requires.py", line 294, in wrapper
+    return func(*args, **kwargs)
+  File "C:\Users\destr\dbt_learn\env\lib\site-packages\dbt\cli\main.py", line 303, in docs_serve
+    results = task.run()
+  File "C:\Users\destr\dbt_learn\env\lib\site-packages\dbt\task\docs\serve.py", line 29, in run
+    httpd.serve_forever()
+  File "C:\Users\destr\AppData\Local\Programs\Python\Python39\lib\socketserver.py", line 232, in serve_forever
+    ready = selector.select(poll_interval)
+  File "C:\Users\destr\AppData\Local\Programs\Python\Python39\lib\selectors.py", line 324, in select
+    r, w, _ = self._select(self._readers, self._writers, [], timeout)
+  File "C:\Users\destr\AppData\Local\Programs\Python\Python39\lib\selectors.py", line 315, in _select
+    r, w, x = select.select(r, w, w, timeout)
+KeyboardInterrupt
+
+[0m02:29:35.174383 [debug] [MainThread]: Command `dbt docs serve` failed at 02:29:35.174383 after 580.14 seconds
+[0m02:29:35.175434 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'end', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000001C3A957FD00>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000001C3AF8C5490>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000001C3AF8C5160>]}
+[0m02:29:35.176385 [debug] [MainThread]: Flushing usage events

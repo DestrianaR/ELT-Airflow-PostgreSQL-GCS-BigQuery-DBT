@@ -1,0 +1,357 @@
+version: 2
+
+models: 
+  - name: dimAddress
+    description: contains address information for the customers.
+    columns:
+      - name: address_key
+        description: ""
+        tests:
+          - unique
+          - not_null
+
+      - name: addressid
+        description: ""
+
+      - name: city_name
+        description: ""
+
+      - name: postalcode
+        description: ""
+
+      - name: addressline
+        description: ""
+
+      - name: state_name
+        description: ""
+
+      - name: country_name
+        description: ""    
+        
+  - name: dimCustomer
+    description: ""
+    columns:
+      - name: customer_key
+        description: ""
+        tests:
+          - unique
+          - not_null
+
+      - name: customerid
+        description: ""
+
+      - name: personbusinessentityid
+        description: ""
+
+      - name: title
+        description: ""
+
+      - name: fullname
+        description: ""
+
+      - name: houseownerflag
+        description: ""
+
+      - name: occupation
+        description: ""
+
+      - name: maritalstatus
+        description: ""
+
+      - name: commutedistance
+        description: ""
+
+      - name: education
+        description: ""
+
+      - name: numbercarsowned
+        description: ""
+
+      - name: totalchildren
+        description: ""
+
+      - name: birthdate
+        description: ""
+
+      - name: datefirstpurchase
+        description: ""
+
+      - name: country
+        description: ""
+
+      - name: city
+        description: ""
+
+      - name: state
+        description: ""
+
+      - name: postalcode
+        description: ""
+
+      - name: addressline1
+        description: ""
+
+      - name: addressline2
+        description: ""
+
+  - name: dimDate
+    description: ""
+    columns:
+      - name: date_key
+        description: ""
+        tests:
+          - unique
+          - not_null
+
+      - name: date_day
+        description: ""
+
+      - name: prior_date_day
+        description: ""
+
+      - name: next_date_day
+        description: ""
+
+      - name: prior_year_date_day
+        description: ""
+
+      - name: prior_year_over_year_date_day
+        description: ""
+
+      - name: day_of_week
+        description: ""
+
+      - name: day_of_week_iso
+        description: ""
+
+      - name: day_of_week_name
+        description: ""
+
+      - name: day_of_week_name_short
+        description: ""
+
+      - name: day_of_month
+        description: ""
+
+      - name: day_of_year
+        description: ""
+
+      - name: week_start_date
+        description: ""
+
+      - name: week_end_date
+        description: ""
+
+      - name: prior_year_week_start_date
+        description: ""
+
+      - name: prior_year_week_end_date
+        description: ""
+
+      - name: week_of_year
+        description: ""
+
+      - name: iso_week_start_date
+        description: ""
+
+      - name: iso_week_end_date
+        description: ""
+
+      - name: prior_year_iso_week_start_date
+        description: ""
+
+      - name: prior_year_iso_week_end_date
+        description: ""
+
+      - name: iso_week_of_year
+        description: ""
+
+      - name: prior_year_week_of_year
+        description: ""
+
+      - name: prior_year_iso_week_of_year
+        description: ""
+
+      - name: month_of_year
+        description: ""
+
+      - name: month_name
+        description: ""
+
+      - name: month_name_short
+        description: ""
+
+      - name: month_start_date
+        description: ""
+
+      - name: month_end_date
+        description: ""
+
+      - name: prior_year_month_start_date
+        description: ""
+
+      - name: prior_year_month_end_date
+        description: ""
+
+      - name: quarter_of_year
+        description: ""
+
+      - name: quarter_start_date
+        description: ""
+
+      - name: quarter_end_date
+        description: ""
+
+      - name: year_number
+        description: ""
+
+      - name: year_start_date
+        description: ""
+
+      - name: year_end_date
+        description: ""
+
+      - name: fulldt
+        description: ""
+
+      - name: dulldtz
+        description: ""
+
+      - name: dulldtzt
+        description: ""
+
+      - name: test
+        description: ""
+
+      - name: direct_dts
+        description: ""
+
+      - name: ts_utc
+        description: ""
+
+  - name: dimOrderStatus
+    description: ""
+    columns:
+      - name: order_status_key
+        description: ""
+        tests:
+          - unique
+          - not_null
+
+      - name: order_status
+        description: ""
+
+      - name: order_status_name
+        description: ""
+
+  - name: dimProduct
+    description: ""
+    columns:
+      - name: product_key
+        description: ""
+        tests:
+          - unique
+          - not_null
+
+      - name: productid
+        description: ""
+
+      - name: product_name
+        description: ""
+
+      - name: productnumber
+        description: ""
+
+      - name: color
+        description: ""
+
+      - name: daystomanufacture
+        description: ""
+
+      - name: safetystocklevel
+        description: ""
+
+      - name: standardcost
+        description: ""
+
+      - name: product_subcategory_name
+        description: ""
+
+      - name: product_category_name
+        description: ""
+
+      - name: sellstartdate
+        description: ""
+
+      - name: sellenddate
+        description: ""
+
+  - name: dimTerritory
+    description: ""
+    columns:
+      - name: territory_key
+        description: ""
+        tests:
+          - unique
+          - not_null
+
+      - name: territoryid
+        description: ""
+
+      - name: salesterritoryname
+        description: ""
+
+      - name: territory_group
+        description: ""
+
+      - name: countryregioncode
+        description: ""
+
+      - name: costytd
+        description: ""
+
+      - name: salesytd
+        description: ""
+
+      - name: costlastyear
+        description: ""
+
+      - name: saleslastyear
+        description: ""
+
+
+  - name: fctSales
+    description: ""
+    columns:
+      - name: sales_key
+        description: ""
+        tests:
+          - unique
+          - not_null
+
+      - name: territory_key
+        description: ""
+
+      - name: territoryid
+        description: ""
+
+      - name: salesterritoryname
+        description: ""
+
+      - name: territory_group
+        description: ""
+
+      - name: countryregioncode
+        description: ""
+
+      - name: costytd
+        description: ""
+
+      - name: salesytd
+        description: ""
+
+      - name: costlastyear
+        description: ""
+
+      - name: saleslastyear
+        description: ""

@@ -1,0 +1,455 @@
+version: 2
+
+models:
+  - name: stg_address
+    description: "This table stores people's address data"
+    columns:
+      - name: addressid
+        description: "The primary key for this table"
+        tests:
+          - unique
+          - not_null
+
+      - name: addressline1
+        description: "Address first line"
+
+      - name: addressline2
+        description: "Address second line"
+
+      - name: city
+        description: "City name"
+
+      - name: stateprovinceid
+        description: "Foreign key for stateprovince / Address state name"
+        tests:
+          - relationships:
+              to: ref('stg_stateprovince')
+              field: stateprovinceid
+
+      - name: postalcode
+        description: "Zip code"
+
+      - name: spatiallocation
+        description: "Spatial location"
+
+
+  - name: stg_countryregion
+    description: "This table stores country and region data."
+    columns:
+      - name: countryregioncode
+        description: "Code identifying the country or region."
+        tests:
+          - unique
+
+      - name: countryregionname
+        description: "Name of the country or region."
+
+
+  - name: stg_customer
+    description: "This table stores customer information."
+    columns:
+      - name: customerid
+        description: "Unique identifier for the customer."
+        tests:
+          - unique
+          - not_null
+
+      - name: personid
+        description: "Person identifier."
+
+      - name: storeid
+        description: "Store identifier."
+
+      - name: territoryid
+        description: "Territory identifier."
+
+      - name: accountnumber
+        description: "Customer account number."
+
+      - name: rowguid
+        description: "Row identifier."
+
+
+  - name: stg_entityaddress
+    description: "This table stores entity address information."
+    columns:
+      - name: addresstypeid
+        description: "Address type identifier."
+
+      - name: businessentityid
+        description: "Business entity identifier."
+
+      - name: addressid
+        description: "Address identifier."
+
+
+  - name: stg_person
+    description: "This table stores person information."
+    columns:
+      - name: businessentityid
+        description: "Business entity identifier."
+
+      - name: persontype
+        description: "Type of person."
+
+      - name: namestyle
+        description: "Name style."
+
+      - name: title
+        description: "Title."
+
+      - name: firstname
+        description: "First name."
+
+      - name: middlename
+        description: "Middle name."
+
+      - name: lastname
+        description: "Last name."
+
+      - name: suffix
+        description: "Suffix."
+
+      - name: emailpromotion
+        description: "Email promotion flag."
+
+      - name: rowguid
+        description: "Row identifier."
+
+      - name: birthdate
+        description: "Birthdate."
+
+      - name: maritalstatus
+        description: "Marital status."
+
+      - name: gender
+        description: "Gender."
+
+      - name: totalchildren
+        description: "Total children."
+
+      - name: numberchildrenathome
+        description: "Number of children at home."
+
+      - name: houseownerflag
+        description: "House owner flag."
+
+      - name: numbercarsowned
+        description: "Number of cars owned."
+
+      - name: datefirstpurchase
+        description: "Date of first purchase."
+
+      - name: commutedistance
+        description: "Commute distance."
+
+      - name: education
+        description: "Education level."
+
+      - name: occupation
+        description: "Occupation."
+
+
+  - name: stg_product
+    description: "This table stores product information."
+    columns:
+      - name: productid
+        description: "Unique identifier for the product."
+
+      - name: productname
+        description: "Name of the product."
+
+      - name: productnumber
+        description: "Product number."
+
+      - name: makeflag
+        description: "Make flag."
+
+      - name: finishedgoodsflag
+        description: "Finished goods flag."
+
+      - name: color
+        description: "Product color."
+
+      - name: safetystocklevel
+        description: "Safety stock level."
+
+      - name: reorderpoint
+        description: "Reorder point."
+
+      - name: standardcost
+        description: "Standard cost."
+
+      - name: listprice
+        description: "List price."
+
+      - name: size
+        description: "Product size."
+
+      - name: sizeunitmeasurecode
+        description: "Size unit of measure code."
+
+      - name: weightunitmeasurecode
+        description: "Weight unit of measure code."
+
+      - name: weight
+        description: "Product weight."
+
+      - name: daystomanufacture
+        description: "Days to manufacture."
+
+      - name: productline
+        description: "Product line."
+
+      - name: class
+        description: "Product class."
+
+      - name: style
+        description: "Product style."
+
+      - name: productsubcategoryid
+        description: "Product subcategory identifier."
+
+      - name: productmodelid
+        description: "Product model identifier."
+
+      - name: sellstartdate
+        description: "Date when the product sales started."
+
+      - name: sellenddate
+        description: "Date when the product sales ended."
+
+      - name: discontinueddate
+        description: "Date when the product was discontinued."
+
+      - name: rowguid
+        description: "Row identifier."
+
+
+  - name: stg_productcategory
+    description: "This table stores product category data."
+    columns:
+      - name: productcategoryid
+        description: "The primary key for this table."
+        tests:
+          - unique
+          - not_null
+
+      - name: productcategory
+        description: "Product category."
+        tests:
+          - accepted_values:
+              values: ['Bikes', 'Components', 'Clothing', 'Accessories']
+
+      - name: rowguid
+        description: "Row identifier."
+
+
+  - name: stg_productsubcategory
+    description: "This table stores product subcategory data."
+    columns:
+      - name: productsubcategoryid
+        description: "Product subcategory identifier."
+
+      - name: productcategoryid
+        description: "Product category identifier."
+
+      - name: productsubcategory
+        description: "Product subcategory."
+
+      - name: rowguid
+        description: "Row identifier."
+
+
+  - name: stg_salesorderdetail
+    description: "This table stores sales order detail data."
+    columns:
+      - name: salesorderid
+        description: "Sales order identifier."
+
+      - name: salesorderdetailid
+        description: "Sales order detail identifier."
+
+      - name: carriertrackingnumber
+        description: "Carrier tracking number."
+
+      - name: orderqty
+        description: "Order quantity."
+
+      - name: productid
+        description: "Product identifier."
+
+      - name: specialofferid
+        description: "Special offer identifier."
+
+      - name: unitprice
+        description: "Unit price."
+
+      - name: unitpricediscount
+        description: "Unit price discount."
+
+      - name: linetotal
+        description: "Line total."
+
+      - name: rowguid
+        description: "Row identifier."
+
+
+  - name: stg_salesorderheader
+    description: "This table stores sales order header data."
+    columns:
+      - name: salesorderid
+        description: "Sales order identifier."
+
+      - name: revisionnumber
+        description: "Revision number."
+
+      - name: orderdate
+        description: "Order date."
+
+      - name: duedate
+        description: "Due date."
+
+      - name: shipdate
+        description: "Ship date."
+
+      - name: status
+        description: "Order status."
+
+      - name: onlineorderflag
+        description: "Online order flag."
+
+      - name: salesordernumber
+        description: "Sales order number."
+
+      - name: purchaseordernumber
+        description: "Purchase order number."
+
+      - name: accountnumber
+        description: "Account number."
+
+      - name: customerid
+        description: "Customer identifier."
+
+      - name: salespersonid
+        description: "Salesperson identifier."
+
+      - name: territoryid
+        description: "Territory identifier."
+
+      - name: billtoaddressid
+        description: "Billing address identifier."
+
+      - name: shiptoaddressid
+        description: "Shipping address identifier."
+
+      - name: shipmethodid
+        description: "Ship method identifier."
+
+      - name: creditcardid
+        description: "Credit card identifier."
+
+      - name: creditcardapprovalcode
+        description: "Credit card approval code."
+
+      - name: currencyrateid
+        description: "Currency rate identifier."
+
+      - name: subtotal
+        description: "Subtotal amount."
+
+      - name: taxamt
+        description: "Tax amount."
+
+      - name: freight
+        description: "Freight amount."
+
+      - name: totaldue
+        description: "Total amount due."
+
+      - name: comment
+        description: "Comment."
+
+      - name: rowguid
+        description: "Row identifier."
+
+
+  - name: stg_salesorderheadersalesreason
+    description: "This table stores sales order header sales reason data."
+    columns:
+      - name: salesorderid
+        description: "Sales order identifier."
+
+      - name: salesreasonid
+        description: "Sales reason identifier."
+
+
+  - name: stg_salesreason
+    description: "This table stores sales reason data."
+    columns:
+      - name: salesreasonid
+        description: "Sales reason identifier."
+
+      - name: salesreason
+        description: "Sales reason description."
+
+      - name: reasontype
+        description: "Type of sales reason."
+
+
+  - name: stg_salesterritory
+    description: "This table stores sales territory data."
+    columns:
+      - name: territoryid
+        description: "Territory identifier."
+
+      - name: salesterritoryname
+        description: "Name of the sales territory."
+
+      - name: countryregioncode
+        description: "Country or region code."
+
+      - name: group
+        description: "Sales territory group."
+
+      - name: salesytd
+        description: "Sales year-to-date."
+
+      - name: saleslastyear
+        description: "Sales last year."
+
+      - name: costytd
+        description: "Cost year-to-date."
+
+      - name: costlastyear
+        description: "Cost last year."
+
+      - name: rowguid
+        description: "Row identifier."
+
+
+  - name: stg_stateprovince
+    description: "This table stores state or province data."
+    columns:
+      - name: stateprovinceid
+        description: "State or province identifier."
+
+      - name: stateprovincecode
+        description: "State or province code."
+
+      - name: countryregioncode
+        description: "Country or region code."
+
+      - name: isonlystateprovinceflag
+        description: "Flag indicating if it is the only state or province."
+
+      - name: statprovincename
+        description: "Name of the state or province."
+
+      - name: territoryid
+        description: "Territory identifier."
+
+      - name: rowguid
+        description: "Row identifier."
+
+

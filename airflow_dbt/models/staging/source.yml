@@ -1,0 +1,23 @@
+version: 2
+
+sources:
+  - name: src_bigquery
+    schema: sales_db
+    database: elt-project-427017
+
+    tables:
+      - name: address
+      - name: businessentityaddress
+      - name: countryregion
+      - name: customer
+      - name: person
+      - name: product
+      - name: productcategory
+      - name: productsubcategory
+      - name: salesorderdetail
+      - name: salesorderheader
+      - name: salesorderheadersalesreason
+      - name: salesreason
+      - name: salesterritory
+      - name: specialoffer
+      - name: stateprovince
