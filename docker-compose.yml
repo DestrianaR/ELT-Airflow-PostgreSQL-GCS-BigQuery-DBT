@@ -1,0 +1,68 @@
+version: '3'
+
+x-airflow-common:
+  &airflow-common
+  build:
+    context: .
+    dockerfile: ./builds/airflow/Dockerfile
+  env_file: 
+    - .env
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./credential:/opt/airflow/credential
+    - ./data/dataset:/opt/airflow/dataset
+    - ./airflow_dbt:/opt/airflow/airflow_dbt
+  depends_on:
+    - postgres
+
+services:
+  airflow-webserver:
+    <<: *airflow-common
+    restart: always
+    command: >
+      bash -c "airflow db upgrade && airflow scheduler -D && airflow webserver"
+    ports:
+      - 8080:8080
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      - postgres
+
+  airflow-scheduler:
+    <<: *airflow-common
+    restart: always
+    command: >
+      bash -c "airflow scheduler"
+    depends_on:
+      - airflow-webserver
+
+  postgres:
+    image: postgres:latest
+    restart: always
+    container_name: postgres
+    env_file:
+      - .env
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/initdb:/docker-entrypoint-initdb.d
+      - postgres-db-volume:/var/lib/postgresql/data
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    env_file:
+      - .env
+    ports:
+      - 8081:80
+    volumes:
+      - pgadmin-volume:/var/lib/pgadmin
+    depends_on:
+      - postgres
+
+volumes:
+  postgres-db-volume:
+  pgadmin-volume:
