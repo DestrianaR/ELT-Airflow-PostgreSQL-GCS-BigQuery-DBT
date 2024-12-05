@@ -32,4 +32,20 @@ After that, place the credential file in the `credential` folder and adjust the 
     ```bash
     python load_data_to_pg.py
     ```
-4. Open Airflow in your browser.
+4. Open and start Airflow in your browser.
+
+To stop all container just type this command
+```bash
+docker-compose down
+```
+
+## Dashboard
+1. Sales Dashboard Overview
+![Dashboard Sales overview](/image/sales_dashboard_page_1.jpg)
+<br>
+2. Product Sales Performance
+![Product Sales Performance](/image/sales_dashboard_page_2.jpg)
+<br>
+3. Region Sales Performance
+![Region Sales Performance](/image/sales_dashboard_page_3.jpg)
+
