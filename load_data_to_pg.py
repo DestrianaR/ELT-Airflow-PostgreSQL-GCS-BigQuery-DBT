@@ -5,7 +5,7 @@ import pandas as pd
 engine = create_engine(f'postgresql://postgres:postgres@localhost/AdventureWorks2019')
 schema_name = "sales"
 
-# Membuat skema baru jika belum ada
+# Create new schema if not exists
 with engine.connect() as connection:
     connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema_name}"))
     
