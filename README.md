@@ -42,10 +42,10 @@ docker-compose down
 ## Dashboard
 1. Sales Dashboard Overview
 ![Dashboard Sales overview](/image/sales_dashboard_1.jpg)
-<br>
+
 2. Product Sales Performance
 ![Product Sales Performance](/image/sales_dashboard_2.jpg)
-<br>
+
 3. Region Sales Performance
 ![Region Sales Performance](/image/sales_dashboard_3.jpg)
 
