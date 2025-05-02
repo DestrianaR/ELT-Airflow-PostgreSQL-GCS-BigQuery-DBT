@@ -4,19 +4,19 @@ with source as (
 
 ),
 
-renamed as (
+stg_address as (
 
     select
-        addressid,
-        addressline1,
-        addressline2,
+        addressid AS address_id,
+        addressline1 AS address_line1,
+        addressline2 AS address_line2,
         city,
-        stateprovinceid,
-        postalcode,
-        spatiallocation
+        stateprovinceid AS state_province_id,
+        postalcode AS postal_code,
+        spatiallocation AS spatial_location
 
     from source
 
 )
 
-select * from renamed
+select * from stg_address

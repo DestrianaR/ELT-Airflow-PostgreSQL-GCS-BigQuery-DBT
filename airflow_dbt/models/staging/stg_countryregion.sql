@@ -4,14 +4,14 @@ with source as (
 
 ),
 
-renamed as (
+stg_countryregion as (
 
     select
-        countryregioncode,
-        countryregionname
+        countryregioncode AS country_region_code,
+        countryregionname AS country_region_name
 
     from source
 
 )
 
-select * from renamed
+select * from stg_countryregion

@@ -1,6 +1,6 @@
 apache-airflow-providers-google==10.19.0
 apache-airflow-providers-postgres==5.11.1
-dbt==1.0.0.38.4
+dbt==1.0.0.40.0
 dbt-bigquery==1.8.2
 google-auth==2.29.0
 google-auth-oauthlib==1.2.0

@@ -1,12 +1,12 @@
 select
-    {{ dbt_utils.generate_surrogate_key(['stg_specialoffer.specialofferid']) }} as special_offer_key,
-    specialofferid,
+    {{ dbt_utils.generate_surrogate_key(['stg_specialoffer.special_offer_id']) }} as special_offer_key,
+    special_offer_id,
     description,
-    salesytd,
+    sales_ytd,
     type,
     category,
-    startDate,
-    enddate,
-    minqty,
-    maxqty
+    start_date,
+    end_date,
+    min_quantity,
+    max_quantity
 from {{ ref('stg_specialoffer') }}

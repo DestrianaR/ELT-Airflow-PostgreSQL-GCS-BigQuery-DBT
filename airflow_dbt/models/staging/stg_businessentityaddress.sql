@@ -3,13 +3,13 @@ with source as (
     select * from {{ source('src_bigquery', 'businessentityaddress') }}
 
 ),
-renamed as (
+stg_businessentityaddress as (
 
     select
-        addresstypeid,
-        businessentityid,
-        addressid
+        addresstypeid AS address_type_id,
+        businessentityid AS business_entity_id,
+        addressid AS address_id
     from source
 )
     
-select * from renamed
+select * from stg_businessentityaddress

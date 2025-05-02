@@ -8,7 +8,7 @@ dbt_bigquery:
       location: US
       method: service-account
       priority: interactive
-      project: elt-project-427017
+      project: project-elt
       threads: 4
       type: bigquery
   target: dev

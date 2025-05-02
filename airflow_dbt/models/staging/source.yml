@@ -3,7 +3,7 @@ version: 2
 sources:
   - name: src_bigquery
     schema: sales_db
-    database: elt-project-427017
+    database: project-elt
 
     tables:
       - name: address

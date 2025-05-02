@@ -4,14 +4,14 @@ with source as (
 
 ),
 
-renamed as (
+stg_productcategory as (
 
     select
-        productcategoryid,
-        productcategory
+        productcategoryid AS product_category_id,
+        productcategory AS product_category
 
     from source
 
 )
 
-select * from renamed
+select * from stg_productcategory

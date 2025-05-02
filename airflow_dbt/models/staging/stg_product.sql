@@ -4,35 +4,35 @@ with source as (
 
 ),
 
-renamed as (
+stg_product as (
 
     select
-        productid,
-        productname,
-        productnumber,
-        makeflag,
-        finishedgoodsflag,
+        productid AS product_id,
+        productname AS product_name,
+        productnumber AS product_number,
+        makeflag AS make_flag,
+        finishedgoodsflag AS finished_goods_flag,
         color,
-        safetystocklevel,
-        reorderpoint,
-        {{ convert_to_float('standardcost') }} AS standardcost,
-        {{ convert_to_float('listprice') }} AS listprice,
+        safetystocklevel AS safety_stock_level,
+        reorderpoint AS re_order_point,
+        {{ convert_to_float('standardcost') }} AS standard_cost,
+        {{ convert_to_float('listprice') }} AS list_price,
         size,
-        sizeunitmeasurecode,
-        weightunitmeasurecode,
+        sizeunitmeasurecode AS size_unit_measure_code,
+        weightunitmeasurecode AS weight_unit_measure_code,
         weight,
-        daystomanufacture,
-        productline,
+        daystomanufacture AS days_to_manufacture,
+        productline AS product_line,
         class,
         style,
-        productsubcategoryid,
-        productmodelid,
-        sellstartdate,
-        sellenddate,
-        discontinueddate
+        productsubcategoryid AS product_subcategory_id,
+        productmodelid AS product_model_id,
+        sellstartdate AS sell_start_date,
+        sellenddate AS sell_end_date,
+        discontinueddate AS discontinued_date
         
     from source
 
 )
 
-select * from renamed
+select * from stg_product

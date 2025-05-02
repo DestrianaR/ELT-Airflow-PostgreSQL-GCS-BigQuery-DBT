@@ -4,15 +4,15 @@ with source as (
 
 ),
 
-renamed as (
+stg_salesreason as (
 
     select
-        salesreasonid,
-        salesreason,
-        reasontype
+        salesreasonid AS sales_reason_id,
+        salesreason AS sales_reason,
+        reasontype AS reason_type
 
     from source
 
 )
 
-select * from renamed
+select * from stg_salesreason

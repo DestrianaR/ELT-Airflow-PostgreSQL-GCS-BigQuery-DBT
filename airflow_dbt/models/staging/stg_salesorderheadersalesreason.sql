@@ -4,14 +4,14 @@ with source as (
 
 ),
 
-renamed as (
+stg_salesorderheadersalesreason as (
 
     select
-        salesorderid,
-        salesreasonid
+        salesorderid AS sales_order_id,
+        salesreasonid AS sales_reason_id
 
     from source
 
 )
 
-select * from renamed
+select * from stg_salesorderheadersalesreason

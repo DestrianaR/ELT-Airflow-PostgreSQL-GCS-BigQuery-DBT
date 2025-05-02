@@ -1,26 +1,37 @@
+{{ 
+  config(
+    materialized='table',
+    partition_by={
+      "field": "order_date",
+      "data_type": "date"
+    },
+    cluster_by=["product_key", "customer_key", "territory_key"]
+  ) 
+}}
+
 select
-    {{ dbt_utils.generate_surrogate_key(['stg_salesorderdetail.salesorderid', 'salesorderdetailid']) }} as sales_key,
-    {{ dbt_utils.generate_surrogate_key(['productid']) }} as product_key,
-    {{ dbt_utils.generate_surrogate_key(['customerid']) }} as customer_key,
-    {{ dbt_utils.generate_surrogate_key(['specialofferid']) }} as special_offer_key,
-    {{ dbt_utils.generate_surrogate_key(['stg_salesorderheadersalesreason.salesreasonid']) }} as sales_reason_key,
-    {{ dbt_utils.generate_surrogate_key(['orderdate']) }} as order_date_key,
-    {{ dbt_utils.generate_surrogate_key(['shipdate']) }} as ship_date_key,
-    {{ dbt_utils.generate_surrogate_key(['duedate']) }} as due_date_key,
-    {{ dbt_utils.generate_surrogate_key(['territoryid']) }} as territory_key,
-    orderdate,
-    onlineorderflag,
-    stg_salesorderdetail.specialofferid as specialoffer,
-    stg_salesorderheadersalesreason.salesreasonid as salesreason,
-    stg_salesorderdetail.unitpricediscount as unitpricediscount,
-    stg_salesorderdetail.unitprice,
-    stg_salesorderdetail.orderqty,
-    stg_salesorderdetail.linetotal as salesamount,
-    case when stg_salesorderdetail.unitpricediscount > 0
-        then stg_salesorderdetail.linetotal * stg_salesorderdetail.unitpricediscount 
-        else stg_salesorderdetail.linetotal
-        end as totaldiscount,
-    stg_salesorderheader.taxamt 
+    {{ dbt_utils.generate_surrogate_key(['stg_salesorderdetail.sales_order_id','sales_order_detail_id']) }} as sales_key,
+    {{ dbt_utils.generate_surrogate_key(['product_id']) }} as product_key,
+    {{ dbt_utils.generate_surrogate_key(['customer_id']) }} as customer_key,
+    {{ dbt_utils.generate_surrogate_key(['special_offer_id']) }} as special_offer_key,
+    {{ dbt_utils.generate_surrogate_key(['stg_salesorderheadersalesreason.sales_reason_id']) }} as sales_reason_key,
+    {{ dbt_utils.generate_surrogate_key(['order_date']) }} as order_date_key,
+    {{ dbt_utils.generate_surrogate_key(['ship_date']) }} as ship_date_key,
+    {{ dbt_utils.generate_surrogate_key(['due_date']) }} as due_date_key,
+    {{ dbt_utils.generate_surrogate_key(['territory_id']) }} as territory_key,
+    order_date,
+    online_order_flag,
+    stg_salesorderdetail.special_offer_id as special_offer,
+    stg_salesorderheadersalesreason.sales_reason_id as sales_reason,
+    stg_salesorderdetail.unit_price_discount,
+    stg_salesorderdetail.unit_price,
+    stg_salesorderdetail.order_quantity,
+    stg_salesorderdetail.line_total as sales_amount,
+    case when stg_salesorderdetail.unit_price_discount > 0
+        then stg_salesorderdetail.line_total * stg_salesorderdetail.unit_price_discount 
+        else stg_salesorderdetail.line_total
+        end as total_discount,
+    stg_salesorderheader.tax_amt 
 from {{ ref('stg_salesorderdetail') }}
-inner join  {{ ref('stg_salesorderheader') }} on stg_salesorderdetail.salesorderid = stg_salesorderheader.salesorderid
-left join {{ ref('stg_salesorderheadersalesreason') }} on stg_salesorderheader.salesorderid = stg_salesorderheadersalesreason.salesorderid
+inner join  {{ ref('stg_salesorderheader') }} on stg_salesorderdetail.sales_order_id = stg_salesorderheader.sales_order_id
+left join {{ ref('stg_salesorderheadersalesreason') }} on stg_salesorderheader.sales_order_id = stg_salesorderheadersalesreason.sales_order_id

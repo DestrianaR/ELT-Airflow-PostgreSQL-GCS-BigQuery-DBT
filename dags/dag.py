@@ -15,7 +15,7 @@ load_dotenv()
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
-    'start_date': datetime(2024, 7, 11),
+    'start_date': datetime(2025, 5, 1),
     'retries': 1,
     'retry_delay': timedelta(minutes=1),
 }
@@ -30,7 +30,7 @@ dag = DAG(
 
 # Fetching environment variables
 pg_schema = os.getenv('PG_SCHEMA')
-bq_bucket = os.getenv('BQ_BUCKET')
+bq_bucket = os.getenv('BQ_BUCKET_PARQUET')
 pg_conn_id = os.getenv('PG_CONN_ID')
 bq_conn_id = os.getenv('BQ_CONN_ID')
 bq_project_id = os.getenv('BQ_PROJECT')
@@ -90,5 +90,6 @@ data_modelling_task = BashOperator(
     dag=dag,
 )   
 
-# Define task dependencies
+#Define task dependencies
 export_tables_task >> load_data_task >> data_modelling_task
+
